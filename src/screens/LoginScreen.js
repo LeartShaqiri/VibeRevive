@@ -37,8 +37,8 @@ export default function LoginScreen({ navigation }) {
     setLoading(true);
     try {
       const data = await api.login({ email: email.trim(), password });
-      // ✅ Pass full user object + token to Home
-      navigation.navigate('Home', {
+      // ✅ Use replace so Login is removed from stack — back swipe won't return here
+      navigation.replace('Home', {
         token: data.token,
         user:  data.user,
       });

@@ -9,37 +9,35 @@ import * as ImagePicker from 'expo-image-picker';
 import { api } from '../api';
 
 const AVATAR_BORDERS = [
-  { id: 'none',        label: 'None',      borderColor: 'transparent', shadowColor: 'transparent' },
-  { id: 'glow_blue',   label: '💙 Blue',   borderColor: '#00D4FF',     shadowColor: '#00D4FF' },
-  { id: 'glow_pink',   label: '💗 Pink',   borderColor: '#FF69B4',     shadowColor: '#FF69B4' },
-  { id: 'glow_purple', label: '💜 Purple', borderColor: '#7B5EA7',     shadowColor: '#7B5EA7' },
-  { id: 'glow_gold',   label: '✨ Gold',   borderColor: '#FFD700',     shadowColor: '#FFD700' },
+  { id: 'none',        label: 'None',      borderColor: 'transparent' },
+  { id: 'glow_blue',   label: '💙 Blue',   borderColor: '#00D4FF'     },
+  { id: 'glow_pink',   label: '💗 Pink',   borderColor: '#FF69B4'     },
+  { id: 'glow_purple', label: '💜 Purple', borderColor: '#7B5EA7'     },
+  { id: 'glow_gold',   label: '✨ Gold',   borderColor: '#FFD700'     },
 ];
 
 const EMOJI_TAGS = [
-  '🌶️ Spicy', '🎮 Gamer', '🍜 Foodie', '🎵 Music',
-  '📸 Snap',  '🏋️ Gym',   '✈️ Travel', '🎨 Art',
-  '📚 Books', '🌙 Night owl', '☕ Coffee', '🐾 Pet lover',
+  '🌶️ Spicy','🎮 Gamer','🍜 Foodie','🎵 Music',
+  '📸 Snap','🏋️ Gym','✈️ Travel','🎨 Art',
+  '📚 Books','🌙 Night owl','☕ Coffee','🐾 Pet lover',
 ];
 
 const VIBES = [
-  { id: 'fun',     label: '😂 Here for fun'  },
-  { id: 'connect', label: '🤝 Reconnect'      },
-  { id: 'chaos',   label: '🔥 Chaos mode'     },
-  { id: 'chill',   label: '😌 Keep it chill'  },
+  { id: 'fun',     label: '😂 Here for fun' },
+  { id: 'connect', label: '🤝 Reconnect'     },
+  { id: 'chaos',   label: '🔥 Chaos mode'    },
+  { id: 'chill',   label: '😌 Keep it chill' },
 ];
 
 export default function ProfileSetupScreen({ navigation, route }) {
   const token     = route?.params?.token || '';
   const userParam = route?.params?.user  || null;
-
   const firstName = route?.params?.firstName || userParam?.first_name || '';
   const lastName  = route?.params?.lastName  || userParam?.last_name  || '';
-  const fullName  = `${firstName} ${lastName}`.trim();
 
-  const [displayName,    setDisplayName]    = useState(fullName);
+  const [displayName,    setDisplayName]    = useState(`${firstName} ${lastName}`.trim());
   const [bio,            setBio]            = useState('');
-  const [profileImage,   setProfileImage]   = useState(null);  // base64 string
+  const [profileImage,   setProfileImage]   = useState(null);
   const [selectedBorder, setSelectedBorder] = useState('glow_purple');
   const [selectedTags,   setSelectedTags]   = useState([]);
   const [selectedVibe,   setSelectedVibe]   = useState(null);
@@ -69,8 +67,7 @@ export default function ProfileSetupScreen({ navigation, route }) {
     if (status !== 'granted') { Alert.alert('Permission needed', 'Allow photo access.'); return; }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true, aspect: [1, 1], quality: 0.5,
-      base64: true,
+      allowsEditing: true, aspect: [1, 1], quality: 0.5, base64: true,
     });
     if (!result.canceled) {
       setProfileImage(`data:image/jpeg;base64,${result.assets[0].base64}`);
@@ -84,23 +81,21 @@ export default function ProfileSetupScreen({ navigation, route }) {
 
   const activeBorder = AVATAR_BORDERS.find(b => b.id === selectedBorder);
 
-  // ── Save profile to backend then go to Home ─────────────────────
   const goToHome = async () => {
     setSaving(true);
     try {
-      const updates = {
+      const data = await api.updateProfile(token, {
         display_name:   displayName,
         bio,
         profile_image:  profileImage || '',
         profile_border: selectedBorder,
         vibe_tags:      selectedTags.join(','),
         main_vibe:      selectedVibe || '',
-      };
-      const data = await api.updateProfile(token, updates);
-      // Navigate with fresh user from server
-      navigation.navigate('Home', {
-        token,
-        user: data.user,
+      });
+      // ✅ Reset stack — back swipe can never return to Register/ProfileSetup
+      navigation.reset({
+        index: 0,
+        routes: [{ name: 'Home', params: { token, user: data.user } }],
       });
     } catch (err) {
       Alert.alert('Error saving profile', err.message);
@@ -109,7 +104,6 @@ export default function ProfileSetupScreen({ navigation, route }) {
     }
   };
 
-  // ── STEP 1 ──────────────────────────────────────────────────────
   const renderStep1 = () => (
     <>
       <Animated.View style={[styles.stepHeader, a(0)]}>
@@ -121,8 +115,10 @@ export default function ProfileSetupScreen({ navigation, route }) {
       <Animated.View style={[styles.avatarSection, a(1)]}>
         <TouchableOpacity onPress={pickImage} activeOpacity={0.85}>
           <View style={[styles.avatarRing, activeBorder?.id !== 'none' && {
-            borderColor: activeBorder?.borderColor, shadowColor: activeBorder?.shadowColor,
-            shadowOpacity: 0.55, shadowRadius: 16, shadowOffset: { width: 0, height: 0 }, elevation: 10
+            borderColor: activeBorder?.borderColor,
+            shadowColor: activeBorder?.borderColor,
+            shadowOpacity: 0.55, shadowRadius: 16,
+            shadowOffset: { width: 0, height: 0 }, elevation: 10,
           }]}>
             {profileImage
               ? <Image source={{ uri: profileImage }} style={styles.avatarImage} />
@@ -140,7 +136,7 @@ export default function ProfileSetupScreen({ navigation, route }) {
 
       <Animated.View style={a(2)}>
         <Text style={styles.label}>PROFILE RING</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.borderScroll}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20 }}>
           {AVATAR_BORDERS.map(border => (
             <TouchableOpacity key={border.id} onPress={() => setSelectedBorder(border.id)}
               style={[styles.borderOption, selectedBorder === border.id && styles.borderOptionActive,
@@ -160,7 +156,8 @@ export default function ProfileSetupScreen({ navigation, route }) {
 
       <Animated.View style={a(4)}>
         <Text style={styles.label}>BIO <Text style={styles.optional}>(optional)</Text></Text>
-        <TextInput style={[styles.input, styles.bioInput]} placeholder="A little something about you..."
+        <TextInput style={[styles.input, styles.bioInput]}
+          placeholder="A little something about you..."
           placeholderTextColor="rgba(107,107,138,0.5)" value={bio} onChangeText={setBio}
           multiline maxLength={120} autoCorrect={false} />
         <Text style={styles.charCount}>{bio.length}/120</Text>
@@ -175,7 +172,6 @@ export default function ProfileSetupScreen({ navigation, route }) {
     </>
   );
 
-  // ── STEP 2 ──────────────────────────────────────────────────────
   const renderStep2 = () => (
     <>
       <Animated.View style={[styles.stepHeader, a(0)]}>
@@ -218,7 +214,7 @@ export default function ProfileSetupScreen({ navigation, route }) {
           <Text style={styles.btnBackText}>← Back</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.btnPrimary, { flex: 1 }, (selectedTags.length === 0 || saving) && styles.btnDisabled]}
+          style={[styles.btnPrimary, { flex: 1 }, selectedTags.length === 0 && styles.btnDisabled]}
           activeOpacity={0.85}
           onPress={() => selectedTags.length > 0 && setStep(3)}
         >
@@ -228,13 +224,14 @@ export default function ProfileSetupScreen({ navigation, route }) {
     </>
   );
 
-  // ── STEP 3: Welcome ─────────────────────────────────────────────
   const renderStep3 = () => (
     <View style={styles.welcomeScreen}>
       <Animated.View style={[{ alignItems: 'center' }, a(0)]}>
         <View style={[styles.avatarRingLarge, activeBorder?.id !== 'none' && {
-          borderColor: activeBorder?.borderColor, shadowColor: activeBorder?.shadowColor,
-          shadowOpacity: 0.6, shadowRadius: 24, shadowOffset: { width: 0, height: 0 }, elevation: 12
+          borderColor: activeBorder?.borderColor,
+          shadowColor: activeBorder?.borderColor,
+          shadowOpacity: 0.6, shadowRadius: 24,
+          shadowOffset: { width: 0, height: 0 }, elevation: 12,
         }]}>
           {profileImage
             ? <Image source={{ uri: profileImage }} style={styles.avatarImageLarge} />
@@ -245,7 +242,7 @@ export default function ProfileSetupScreen({ navigation, route }) {
         </View>
       </Animated.View>
 
-      <Animated.View style={[{ alignItems: 'center', marginTop: 20 }, a(1)]}>
+      <Animated.View style={[{ alignItems: 'center', marginTop: 20, width: '100%' }, a(1)]}>
         <Text style={styles.welcomeName}>Hey, {displayName.split(' ')[0]}! 👋</Text>
         <Text style={styles.welcomeSub}>Your vibe is live</Text>
         <View style={styles.vibeCodeLarge}>
@@ -270,10 +267,7 @@ export default function ProfileSetupScreen({ navigation, route }) {
       <Animated.View style={[{ width: '100%', marginTop: 28 }, a(3)]}>
         <TouchableOpacity
           style={[styles.btnPrimary, saving && styles.btnDisabled]}
-          activeOpacity={0.85}
-          onPress={goToHome}
-          disabled={saving}
-        >
+          activeOpacity={0.85} onPress={goToHome} disabled={saving}>
           {saving
             ? <ActivityIndicator color="#fff" />
             : <Text style={styles.btnPrimaryText}>🚀 Let's Go</Text>
@@ -322,7 +316,6 @@ const styles = StyleSheet.create({
   avatarPlaceholderText: { fontSize: 11, color: '#B39DDB', fontStyle: 'italic' },
   vibeCodeBadge: { marginTop: 10, backgroundColor: 'rgba(123,94,167,0.1)', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 5, borderWidth: 1, borderColor: 'rgba(123,94,167,0.2)' },
   vibeCodeText: { fontSize: 13, color: '#7B5EA7', fontWeight: '600', letterSpacing: 1 },
-  borderScroll: { marginBottom: 20 },
   borderOption: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1.5, borderColor: 'rgba(107,107,138,0.15)', marginRight: 8, backgroundColor: '#fff' },
   borderOptionActive: { backgroundColor: 'rgba(123,94,167,0.1)', borderColor: '#7B5EA7' },
   borderOptionText: { fontSize: 13, color: '#1A1A2E' },
