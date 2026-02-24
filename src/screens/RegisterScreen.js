@@ -5,7 +5,6 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import TypingText from '../components/TypingText';
 import { api } from '../api';
 
 export default function RegisterScreen({ navigation }) {
@@ -36,17 +35,17 @@ export default function RegisterScreen({ navigation }) {
 
   const inputStyle = (field) => [
     styles.input,
-    focused === field && styles.inputFocused,
-    errors[field] && styles.inputError,
+    focused === field  && styles.inputFocused,
+    errors[field]      && styles.inputError,
   ];
 
   const validate = () => {
     const e = {};
-    if (!firstName.trim()) e.firstName = 'Required';
-    if (!lastName.trim())  e.lastName  = 'Required';
-    if (!email.trim() || !email.includes('@')) e.email = 'Valid email required';
-    if (password.length < 8) e.password = 'Min. 8 characters';
-    if (password !== confirm) e.confirm  = "Passwords don't match";
+    if (!firstName.trim())                    e.firstName = 'Required';
+    if (!lastName.trim())                     e.lastName  = 'Required';
+    if (!email.trim() || !email.includes('@')) e.email    = 'Valid email required';
+    if (password.length < 8)                  e.password  = 'Min. 8 characters';
+    if (password !== confirm)                 e.confirm   = "Passwords don't match";
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -57,13 +56,12 @@ export default function RegisterScreen({ navigation }) {
     setLoading(true);
     try {
       const data = await api.register({ firstName, lastName, email, phone, password });
-      // Go to profile setup with real vibe code from backend
+      // ✅ Pass full user object + token to ProfileSetup
       navigation.navigate('ProfileSetup', {
         firstName,
         lastName,
-        email,
-        vibeCodeFromServer: data.user.vibe_code,
         token: data.token,
+        user:  data.user,
       });
     } catch (err) {
       setApiError(err.message || 'Something went wrong. Try again.');
@@ -86,21 +84,19 @@ export default function RegisterScreen({ navigation }) {
           </Animated.View>
 
           <Animated.View style={[styles.logoArea, a(1)]}>
-            <TypingText size={42} />
+            <Text style={styles.logoText}>VibeRevive</Text>
             <Text style={styles.tagline}>reignite your people</Text>
             <View style={styles.dot} />
           </Animated.View>
 
           <Animated.Text style={[styles.formTitle, a(2)]}>Create your vibe</Animated.Text>
 
-          {/* API error */}
           {apiError ? (
             <Animated.View style={[styles.errorBox, a(2)]}>
               <Text style={styles.errorBoxText}>⚠ {apiError}</Text>
             </Animated.View>
           ) : null}
 
-          {/* Name row */}
           <Animated.View style={a(3)}>
             <View style={styles.nameRow}>
               <View style={{ flex: 1 }}>
@@ -207,11 +203,6 @@ export default function RegisterScreen({ navigation }) {
                 : <Text style={styles.btnPrimaryText}>Create account ✦</Text>
               }
             </TouchableOpacity>
-            <Text style={styles.terms}>
-              By signing up you agree to our{' '}
-              <Text style={{ color: '#7B5EA7' }}>Terms</Text> and{' '}
-              <Text style={{ color: '#7B5EA7' }}>Privacy Policy</Text>
-            </Text>
             <View style={styles.switchRow}>
               <Text style={styles.switchText}>Already have an account? </Text>
               <TouchableOpacity onPress={() => navigation.navigate('Login')}>
@@ -234,6 +225,7 @@ const styles = StyleSheet.create({
   backBtn: { marginTop: 12, alignSelf: 'flex-start' },
   backText: { fontSize: 14, color: '#6B6B8A', fontStyle: 'italic' },
   logoArea: { alignItems: 'center', paddingTop: 20, paddingBottom: 20 },
+  logoText: { fontStyle: 'italic', fontSize: 36, color: '#1A1A2E', fontWeight: '300', letterSpacing: -1 },
   tagline: { fontStyle: 'italic', fontSize: 14, color: '#6B6B8A', letterSpacing: 0.4, marginTop: 6 },
   dot: { width: 5, height: 5, borderRadius: 3, backgroundColor: '#B39DDB', marginTop: 14 },
   formTitle: { fontStyle: 'italic', fontSize: 28, color: '#1A1A2E', textAlign: 'center', marginBottom: 16, fontWeight: '300' },
@@ -249,7 +241,6 @@ const styles = StyleSheet.create({
   btnPrimary: { backgroundColor: '#1A1A2E', borderRadius: 16, paddingVertical: 17, alignItems: 'center', shadowColor: '#1A1A2E', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.22, shadowRadius: 14, elevation: 5, marginBottom: 14, marginTop: 20 },
   btnPrimaryText: { color: '#fff', fontSize: 16, fontWeight: '500', letterSpacing: 0.3 },
   btnDisabled: { opacity: 0.6 },
-  terms: { fontSize: 11, color: 'rgba(107,107,138,0.65)', textAlign: 'center', lineHeight: 18, marginBottom: 16 },
   switchRow: { flexDirection: 'row', justifyContent: 'center' },
   switchText: { fontSize: 14, color: '#6B6B8A' },
   switchLink: { fontSize: 14, color: '#7B5EA7', fontWeight: '500', borderBottomWidth: 1, borderBottomColor: 'rgba(123,94,167,0.35)' },

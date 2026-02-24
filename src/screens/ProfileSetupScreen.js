@@ -2,18 +2,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   KeyboardAvoidingView, Platform, Animated, TextInput,
-  Image, Alert,
+  Image, Alert, ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-
-function generateVibeCode(name) {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  const prefix = name ? name.replace(/\s/g, '').slice(0, 4).toUpperCase() : 'Vibe';
-  let suffix = '';
-  for (let i = 0; i < 3; i++) suffix += chars[Math.floor(Math.random() * chars.length)];
-  return prefix + suffix;
-}
+import { api } from '../api';
 
 const AVATAR_BORDERS = [
   { id: 'none',        label: 'None',      borderColor: 'transparent', shadowColor: 'transparent' },
@@ -30,25 +23,28 @@ const EMOJI_TAGS = [
 ];
 
 const VIBES = [
-  { id: 'fun',     label: '😂 Here for fun' },
-  { id: 'connect', label: '🤝 Reconnect'    },
-  { id: 'chaos',   label: '🔥 Chaos mode'   },
-  { id: 'chill',   label: '😌 Keep it chill'},
+  { id: 'fun',     label: '😂 Here for fun'  },
+  { id: 'connect', label: '🤝 Reconnect'      },
+  { id: 'chaos',   label: '🔥 Chaos mode'     },
+  { id: 'chill',   label: '😌 Keep it chill'  },
 ];
 
 export default function ProfileSetupScreen({ navigation, route }) {
-  const firstName = route?.params?.firstName || '';
-  const lastName  = route?.params?.lastName  || '';
-  const fullName  = firstName ? `${firstName} ${lastName}`.trim() : '';
+  const token     = route?.params?.token || '';
+  const userParam = route?.params?.user  || null;
+
+  const firstName = route?.params?.firstName || userParam?.first_name || '';
+  const lastName  = route?.params?.lastName  || userParam?.last_name  || '';
+  const fullName  = `${firstName} ${lastName}`.trim();
 
   const [displayName,    setDisplayName]    = useState(fullName);
-  const [vibeCode]                          = useState(() => generateVibeCode(fullName));
   const [bio,            setBio]            = useState('');
-  const [profileImage,   setProfileImage]   = useState(null);
+  const [profileImage,   setProfileImage]   = useState(null);  // base64 string
   const [selectedBorder, setSelectedBorder] = useState('glow_purple');
   const [selectedTags,   setSelectedTags]   = useState([]);
   const [selectedVibe,   setSelectedVibe]   = useState(null);
   const [step,           setStep]           = useState(1);
+  const [saving,         setSaving]         = useState(false);
 
   const fadeAnims  = useRef([...Array(8)].map(() => new Animated.Value(0))).current;
   const slideAnims = useRef([...Array(8)].map(() => new Animated.Value(28))).current;
@@ -60,8 +56,8 @@ export default function ProfileSetupScreen({ navigation, route }) {
     slideAnims.forEach(a => a.setValue(28));
     fadeAnims.forEach((anim, i) => {
       Animated.parallel([
-        Animated.timing(anim,            { toValue: 1, duration: 500, delay: i * 90, useNativeDriver: true }),
-        Animated.timing(slideAnims[i],   { toValue: 0, duration: 420, delay: i * 90, useNativeDriver: true }),
+        Animated.timing(anim,          { toValue: 1, duration: 500, delay: i * 90, useNativeDriver: true }),
+        Animated.timing(slideAnims[i], { toValue: 0, duration: 420, delay: i * 90, useNativeDriver: true }),
       ]).start();
     });
   };
@@ -70,9 +66,15 @@ export default function ProfileSetupScreen({ navigation, route }) {
 
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') { Alert.alert('Permission needed', 'Allow photo access to set a profile picture.'); return; }
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [1, 1], quality: 0.8 });
-    if (!result.canceled) setProfileImage(result.assets[0].uri);
+    if (status !== 'granted') { Alert.alert('Permission needed', 'Allow photo access.'); return; }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true, aspect: [1, 1], quality: 0.5,
+      base64: true,
+    });
+    if (!result.canceled) {
+      setProfileImage(`data:image/jpeg;base64,${result.assets[0].base64}`);
+    }
   };
 
   const toggleTag = (tag) => {
@@ -82,19 +84,32 @@ export default function ProfileSetupScreen({ navigation, route }) {
 
   const activeBorder = AVATAR_BORDERS.find(b => b.id === selectedBorder);
 
-  const goToHome = () => {
-    navigation.navigate('Home', {
-      displayName,
-      vibeCode,
-      profileImage,
-      selectedBorder,
-      selectedTags,
-      selectedVibe,
-      bio,
-    });
+  // ── Save profile to backend then go to Home ─────────────────────
+  const goToHome = async () => {
+    setSaving(true);
+    try {
+      const updates = {
+        display_name:   displayName,
+        bio,
+        profile_image:  profileImage || '',
+        profile_border: selectedBorder,
+        vibe_tags:      selectedTags.join(','),
+        main_vibe:      selectedVibe || '',
+      };
+      const data = await api.updateProfile(token, updates);
+      // Navigate with fresh user from server
+      navigation.navigate('Home', {
+        token,
+        user: data.user,
+      });
+    } catch (err) {
+      Alert.alert('Error saving profile', err.message);
+    } finally {
+      setSaving(false);
+    }
   };
 
-  // ── STEP 1 ────────────────────────────────────────────────────
+  // ── STEP 1 ──────────────────────────────────────────────────────
   const renderStep1 = () => (
     <>
       <Animated.View style={[styles.stepHeader, a(0)]}>
@@ -105,14 +120,22 @@ export default function ProfileSetupScreen({ navigation, route }) {
 
       <Animated.View style={[styles.avatarSection, a(1)]}>
         <TouchableOpacity onPress={pickImage} activeOpacity={0.85}>
-          <View style={[styles.avatarRing, activeBorder?.id !== 'none' && { borderColor: activeBorder?.borderColor, shadowColor: activeBorder?.shadowColor, shadowOpacity: 0.55, shadowRadius: 16, shadowOffset: { width: 0, height: 0 }, elevation: 10 }]}>
+          <View style={[styles.avatarRing, activeBorder?.id !== 'none' && {
+            borderColor: activeBorder?.borderColor, shadowColor: activeBorder?.shadowColor,
+            shadowOpacity: 0.55, shadowRadius: 16, shadowOffset: { width: 0, height: 0 }, elevation: 10
+          }]}>
             {profileImage
               ? <Image source={{ uri: profileImage }} style={styles.avatarImage} />
-              : <View style={styles.avatarPlaceholder}><Text style={styles.avatarEmoji}>📸</Text><Text style={styles.avatarPlaceholderText}>Tap to add photo</Text></View>
+              : <View style={styles.avatarPlaceholder}>
+                  <Text style={styles.avatarEmoji}>📸</Text>
+                  <Text style={styles.avatarPlaceholderText}>Tap to add photo</Text>
+                </View>
             }
           </View>
         </TouchableOpacity>
-        <View style={styles.vibeCodeBadge}><Text style={styles.vibeCodeText}>{vibeCode}</Text></View>
+        <View style={styles.vibeCodeBadge}>
+          <Text style={styles.vibeCodeText}>{userParam?.vibe_code || '...'}</Text>
+        </View>
       </Animated.View>
 
       <Animated.View style={a(2)}>
@@ -120,7 +143,8 @@ export default function ProfileSetupScreen({ navigation, route }) {
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.borderScroll}>
           {AVATAR_BORDERS.map(border => (
             <TouchableOpacity key={border.id} onPress={() => setSelectedBorder(border.id)}
-              style={[styles.borderOption, selectedBorder === border.id && styles.borderOptionActive, border.id !== 'none' && { borderColor: border.borderColor + '60' }]}>
+              style={[styles.borderOption, selectedBorder === border.id && styles.borderOptionActive,
+                border.id !== 'none' && { borderColor: border.borderColor + '60' }]}>
               <Text style={styles.borderOptionText}>{border.label}</Text>
             </TouchableOpacity>
           ))}
@@ -129,24 +153,29 @@ export default function ProfileSetupScreen({ navigation, route }) {
 
       <Animated.View style={a(3)}>
         <Text style={styles.label}>DISPLAY NAME</Text>
-        <TextInput style={styles.input} placeholder="How your friends know you" placeholderTextColor="rgba(107,107,138,0.5)" value={displayName} onChangeText={setDisplayName} autoCapitalize="words" autoCorrect={false} />
+        <TextInput style={styles.input} placeholder="How your friends know you"
+          placeholderTextColor="rgba(107,107,138,0.5)" value={displayName}
+          onChangeText={setDisplayName} autoCapitalize="words" autoCorrect={false} />
       </Animated.View>
 
       <Animated.View style={a(4)}>
         <Text style={styles.label}>BIO <Text style={styles.optional}>(optional)</Text></Text>
-        <TextInput style={[styles.input, styles.bioInput]} placeholder="A little something about you..." placeholderTextColor="rgba(107,107,138,0.5)" value={bio} onChangeText={setBio} multiline maxLength={120} autoCorrect={false} />
+        <TextInput style={[styles.input, styles.bioInput]} placeholder="A little something about you..."
+          placeholderTextColor="rgba(107,107,138,0.5)" value={bio} onChangeText={setBio}
+          multiline maxLength={120} autoCorrect={false} />
         <Text style={styles.charCount}>{bio.length}/120</Text>
       </Animated.View>
 
       <Animated.View style={a(5)}>
-        <TouchableOpacity style={[styles.btnPrimary, !displayName.trim() && styles.btnDisabled]} activeOpacity={0.85} onPress={() => displayName.trim() && setStep(2)}>
+        <TouchableOpacity style={[styles.btnPrimary, !displayName.trim() && styles.btnDisabled]}
+          activeOpacity={0.85} onPress={() => displayName.trim() && setStep(2)}>
           <Text style={styles.btnPrimaryText}>Next →</Text>
         </TouchableOpacity>
       </Animated.View>
     </>
   );
 
-  // ── STEP 2 ────────────────────────────────────────────────────
+  // ── STEP 2 ──────────────────────────────────────────────────────
   const renderStep2 = () => (
     <>
       <Animated.View style={[styles.stepHeader, a(0)]}>
@@ -163,7 +192,8 @@ export default function ProfileSetupScreen({ navigation, route }) {
             const disabled = !active && selectedTags.length >= 5;
             return (
               <TouchableOpacity key={tag} onPress={() => toggleTag(tag)}
-                style={[styles.tagChip, active && styles.tagChipActive, disabled && styles.tagChipDisabled]} activeOpacity={0.75}>
+                style={[styles.tagChip, active && styles.tagChipActive, disabled && styles.tagChipDisabled]}
+                activeOpacity={0.75}>
                 <Text style={[styles.tagText, active && styles.tagTextActive]}>{tag}</Text>
               </TouchableOpacity>
             );
@@ -175,7 +205,8 @@ export default function ProfileSetupScreen({ navigation, route }) {
         <Text style={[styles.label, { marginTop: 20 }]}>YOUR MAIN VIBE</Text>
         {VIBES.map(v => (
           <TouchableOpacity key={v.id} onPress={() => setSelectedVibe(v.id)}
-            style={[styles.vibeOption, selectedVibe === v.id && styles.vibeOptionActive]} activeOpacity={0.8}>
+            style={[styles.vibeOption, selectedVibe === v.id && styles.vibeOptionActive]}
+            activeOpacity={0.8}>
             <Text style={[styles.vibeOptionText, selectedVibe === v.id && styles.vibeOptionTextActive]}>{v.label}</Text>
             {selectedVibe === v.id && <Text style={styles.checkmark}>✓</Text>}
           </TouchableOpacity>
@@ -186,21 +217,30 @@ export default function ProfileSetupScreen({ navigation, route }) {
         <TouchableOpacity style={styles.btnBack} onPress={() => setStep(1)}>
           <Text style={styles.btnBackText}>← Back</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.btnPrimary, { flex: 1 }, selectedTags.length === 0 && styles.btnDisabled]} activeOpacity={0.85} onPress={() => selectedTags.length > 0 && setStep(3)}>
+        <TouchableOpacity
+          style={[styles.btnPrimary, { flex: 1 }, (selectedTags.length === 0 || saving) && styles.btnDisabled]}
+          activeOpacity={0.85}
+          onPress={() => selectedTags.length > 0 && setStep(3)}
+        >
           <Text style={styles.btnPrimaryText}>Create Profile ✦</Text>
         </TouchableOpacity>
       </Animated.View>
     </>
   );
 
-  // ── STEP 3: Welcome ───────────────────────────────────────────
+  // ── STEP 3: Welcome ─────────────────────────────────────────────
   const renderStep3 = () => (
     <View style={styles.welcomeScreen}>
       <Animated.View style={[{ alignItems: 'center' }, a(0)]}>
-        <View style={[styles.avatarRingLarge, activeBorder?.id !== 'none' && { borderColor: activeBorder?.borderColor, shadowColor: activeBorder?.shadowColor, shadowOpacity: 0.6, shadowRadius: 24, shadowOffset: { width: 0, height: 0 }, elevation: 12 }]}>
+        <View style={[styles.avatarRingLarge, activeBorder?.id !== 'none' && {
+          borderColor: activeBorder?.borderColor, shadowColor: activeBorder?.shadowColor,
+          shadowOpacity: 0.6, shadowRadius: 24, shadowOffset: { width: 0, height: 0 }, elevation: 12
+        }]}>
           {profileImage
             ? <Image source={{ uri: profileImage }} style={styles.avatarImageLarge} />
-            : <View style={[styles.avatarPlaceholder, { width: 120, height: 120, borderRadius: 60 }]}><Text style={{ fontSize: 44 }}>🧑‍🎤</Text></View>
+            : <View style={[styles.avatarPlaceholder, { width: 120, height: 120, borderRadius: 60 }]}>
+                <Text style={{ fontSize: 44 }}>🧑‍🎤</Text>
+              </View>
           }
         </View>
       </Animated.View>
@@ -210,7 +250,7 @@ export default function ProfileSetupScreen({ navigation, route }) {
         <Text style={styles.welcomeSub}>Your vibe is live</Text>
         <View style={styles.vibeCodeLarge}>
           <Text style={styles.vibeCodeLargeLabel}>YOUR VIBE CODE</Text>
-          <Text style={styles.vibeCodeLargeText}>{vibeCode}</Text>
+          <Text style={styles.vibeCodeLargeText}>{userParam?.vibe_code || '...'}</Text>
           <Text style={styles.vibeCodeLargeHint}>Share this with friends to connect</Text>
         </View>
       </Animated.View>
@@ -220,14 +260,24 @@ export default function ProfileSetupScreen({ navigation, route }) {
           {selectedTags.slice(0, 3).map(tag => (
             <View key={tag} style={styles.summaryTag}><Text style={styles.summaryTagText}>{tag}</Text></View>
           ))}
-          {selectedTags.length > 3 && <View style={styles.summaryTag}><Text style={styles.summaryTagText}>+{selectedTags.length - 3} more</Text></View>}
+          {selectedTags.length > 3 && (
+            <View style={styles.summaryTag}><Text style={styles.summaryTagText}>+{selectedTags.length - 3} more</Text></View>
+          )}
         </View>
         {bio ? <Text style={styles.summaryBio}>"{bio}"</Text> : null}
       </Animated.View>
 
       <Animated.View style={[{ width: '100%', marginTop: 28 }, a(3)]}>
-        <TouchableOpacity style={styles.btnPrimary} activeOpacity={0.85} onPress={goToHome}>
-          <Text style={styles.btnPrimaryText}>🚀 Let's Go — Create a Fun-Star</Text>
+        <TouchableOpacity
+          style={[styles.btnPrimary, saving && styles.btnDisabled]}
+          activeOpacity={0.85}
+          onPress={goToHome}
+          disabled={saving}
+        >
+          {saving
+            ? <ActivityIndicator color="#fff" />
+            : <Text style={styles.btnPrimaryText}>🚀 Let's Go</Text>
+          }
         </TouchableOpacity>
       </Animated.View>
     </View>
@@ -265,7 +315,7 @@ const styles = StyleSheet.create({
   stepTitle: { fontStyle: 'italic', fontSize: 32, color: '#1A1A2E', fontWeight: '300', letterSpacing: -0.5 },
   stepSub: { fontSize: 14, color: '#6B6B8A', marginTop: 4 },
   avatarSection: { alignItems: 'center', marginBottom: 20 },
-  avatarRing: { width: 110, height: 110, borderRadius: 55, borderWidth: 3, borderColor: 'transparent', overflow: 'visible', alignItems: 'center', justifyContent: 'center' },
+  avatarRing: { width: 110, height: 110, borderRadius: 55, borderWidth: 3, borderColor: 'transparent', alignItems: 'center', justifyContent: 'center' },
   avatarImage: { width: 104, height: 104, borderRadius: 52 },
   avatarPlaceholder: { width: 104, height: 104, borderRadius: 52, backgroundColor: '#F0EFF8', alignItems: 'center', justifyContent: 'center', gap: 4 },
   avatarEmoji: { fontSize: 28 },
