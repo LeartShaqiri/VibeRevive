@@ -7,6 +7,66 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../api';
 
+// Typing animation — cycles through phrases every 2.5s
+const PHRASES = [
+  'VibeRevive',
+  'reignite your people',
+  'reconnect. recharge.',
+  'your crew awaits',
+  'VibeRevive',
+];
+
+function TypingAnimation() {
+  const [phraseIndex, setPhraseIndex] = useState(0);
+  const [displayed,   setDisplayed]   = useState('');
+  const [isDeleting,  setIsDeleting]  = useState(false);
+  const [cursor,      setCursor]      = useState(true);
+
+  // Cursor blink
+  useEffect(() => {
+    const blink = setInterval(() => setCursor(c => !c), 530);
+    return () => clearInterval(blink);
+  }, []);
+
+  // Typing logic
+  useEffect(() => {
+    const current = PHRASES[phraseIndex];
+    let timeout;
+
+    if (!isDeleting && displayed.length < current.length) {
+      // Still typing
+      timeout = setTimeout(() => {
+        setDisplayed(current.slice(0, displayed.length + 1));
+      }, 80);
+    } else if (!isDeleting && displayed.length === current.length) {
+      // Pause at full word, then start deleting
+      timeout = setTimeout(() => setIsDeleting(true), 1800);
+    } else if (isDeleting && displayed.length > 0) {
+      // Deleting
+      timeout = setTimeout(() => {
+        setDisplayed(current.slice(0, displayed.length - 1));
+      }, 45);
+    } else if (isDeleting && displayed.length === 0) {
+      // Move to next phrase
+      setIsDeleting(false);
+      setPhraseIndex(i => (i + 1) % PHRASES.length);
+    }
+
+    return () => clearTimeout(timeout);
+  }, [displayed, isDeleting, phraseIndex]);
+
+  const isMainTitle = PHRASES[phraseIndex] === 'VibeRevive';
+
+  return (
+    <View style={styles.typingWrap}>
+      <Text style={[styles.typingText, !isMainTitle && styles.typingTextSub]}>
+        {displayed}
+        <Text style={[styles.cursor, { opacity: cursor ? 1 : 0 }]}>|</Text>
+      </Text>
+    </View>
+  );
+}
+
 export default function LoginScreen({ navigation }) {
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
@@ -20,8 +80,8 @@ export default function LoginScreen({ navigation }) {
   useEffect(() => {
     fadeAnims.forEach((anim, i) => {
       Animated.parallel([
-        Animated.timing(anim,          { toValue: 1, duration: 550, delay: i * 130, useNativeDriver: true }),
-        Animated.timing(slideAnims[i], { toValue: 0, duration: 450, delay: i * 130, useNativeDriver: true }),
+        Animated.timing(anim,          { toValue: 1, duration: 600, delay: i * 150, useNativeDriver: true }),
+        Animated.timing(slideAnims[i], { toValue: 0, duration: 500, delay: i * 150, useNativeDriver: true }),
       ]).start();
     });
   }, []);
@@ -37,10 +97,9 @@ export default function LoginScreen({ navigation }) {
     setLoading(true);
     try {
       const data = await api.login({ email: email.trim(), password });
-      // ✅ Use replace so Login is removed from stack — back swipe won't return here
-      navigation.replace('Home', {
-        token: data.token,
-        user:  data.user,
+      navigation.reset({
+        index: 0,
+        routes: [{ name: 'Home', params: { token: data.token, user: data.user } }],
       });
     } catch (err) {
       setError(err.message || 'Something went wrong. Try again.');
@@ -57,9 +116,9 @@ export default function LoginScreen({ navigation }) {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
 
+          {/* ── Typing animation logo area ── */}
           <Animated.View style={[styles.logoArea, a(0)]}>
-            <Text style={styles.logoText}>VibeRevive</Text>
-            <Text style={styles.tagline}>reignite your people</Text>
+            <TypingAnimation />
             <View style={styles.dot} />
           </Animated.View>
 
@@ -135,10 +194,20 @@ const styles = StyleSheet.create({
   blobTop: { position: 'absolute', top: -100, left: -80, width: 320, height: 320, borderRadius: 160, backgroundColor: 'rgba(179,157,219,0.13)' },
   blobBottom: { position: 'absolute', bottom: -80, right: -60, width: 280, height: 280, borderRadius: 140, backgroundColor: 'rgba(0,212,255,0.07)' },
   scroll: { flexGrow: 1, paddingHorizontal: 32, paddingBottom: 40 },
-  logoArea: { alignItems: 'center', paddingTop: 64, paddingBottom: 24 },
-  logoText: { fontStyle: 'italic', fontSize: 42, color: '#1A1A2E', fontWeight: '300', letterSpacing: -1 },
-  tagline: { fontStyle: 'italic', fontSize: 14, color: '#6B6B8A', letterSpacing: 0.4, marginTop: 8 },
-  dot: { width: 5, height: 5, borderRadius: 3, backgroundColor: '#B39DDB', marginTop: 16 },
+
+  logoArea: { alignItems: 'center', paddingTop: 80, paddingBottom: 32 },
+  typingWrap: { minHeight: 56, alignItems: 'center', justifyContent: 'center' },
+  typingText: {
+    fontStyle: 'italic', fontSize: 44, color: '#1A1A2E',
+    fontWeight: '300', letterSpacing: -1, textAlign: 'center',
+  },
+  typingTextSub: {
+    fontSize: 22, color: '#7B5EA7', fontWeight: '300',
+    letterSpacing: 0.2,
+  },
+  cursor: { color: '#B39DDB', fontWeight: '200' },
+  dot: { width: 5, height: 5, borderRadius: 3, backgroundColor: '#B39DDB', marginTop: 18 },
+
   formTitle: { fontStyle: 'italic', fontSize: 30, color: '#1A1A2E', textAlign: 'center', marginBottom: 24, fontWeight: '300' },
   errorBox: { backgroundColor: 'rgba(255,107,107,0.08)', borderRadius: 12, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(255,107,107,0.25)' },
   errorBoxText: { fontSize: 13, color: '#FF6B6B', textAlign: 'center' },

@@ -2,335 +2,520 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Animated, TextInput, KeyboardAvoidingView, Platform,
-  Image, Modal,
+  ActivityIndicator, Image, Modal, Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as ImagePicker from 'expo-image-picker';
+import { api } from '../api';
 
-const VIBE_GOAL = 20; // messages needed to unlock challenge (lower for demo)
+// Typing animation for group name — runs fresh every mount
+function TypingTitle({ name }) {
+  const [displayed, setDisplayed] = useState('');
+  const [cursor,    setCursor]    = useState(true);
+  const [done,      setDone]      = useState(false);
 
-const MOCK_MESSAGES = [
-  { id: 1, senderId: 1, senderName: 'Marco V.',  senderEmoji: '🧑‍🎤', text: 'yooo the crew is back 🔥',       time: '22:30', isMe: false },
-  { id: 2, senderId: 2, senderName: 'Sarah K.',  senderEmoji: '👩‍💻', text: 'finally!! i missed this group lol', time: '22:31', isMe: false },
-  { id: 3, senderId: 0, senderName: 'You',        senderEmoji: '🧑‍🎤', text: 'let\'s gooo 🎉',                  time: '22:31', isMe: true  },
-  { id: 4, senderId: 1, senderName: 'Marco V.',  senderEmoji: '🧑‍🎤', text: 'who\'s ready for the wheel 😈',   time: '22:32', isMe: false },
-  { id: 5, senderId: 3, senderName: 'Jordan T.', senderEmoji: '🧙',  text: 'omg not the wheel again 💀',       time: '22:33', isMe: false },
-];
+  useEffect(() => {
+    setDisplayed(''); setDone(false);
+    let i = 0;
+    const t = setInterval(() => {
+      setDisplayed(name.slice(0, i + 1));
+      i++;
+      if (i >= name.length) { clearInterval(t); setDone(true); }
+    }, 70);
+    return () => clearInterval(t);
+  }, [name]);
 
-const CHALLENGE_DARES = [
-  '📸 Everyone send their most recent photo in their camera roll',
-  '🎤 Voice note only for the next 5 messages',
-  '💬 Describe your week using only emojis',
-  '🔮 Everyone share their most embarrassing recent memory',
-  '🎭 Everyone text in a different accent for 10 minutes',
-  '📞 Someone has to call another member right now',
-  '🖼️ Share the last meme you sent someone',
-  '🤫 Reveal something nobody in this group knows about you',
-];
+  useEffect(() => {
+    if (done) return;
+    const b = setInterval(() => setCursor(c => !c), 480);
+    return () => clearInterval(b);
+  }, [done]);
+
+  return (
+    <Text style={styles.headerName} numberOfLines={1}>
+      {displayed}
+      {!done && <Text style={{ opacity: cursor ? 1 : 0, color: '#B39DDB' }}>|</Text>}
+    </Text>
+  );
+}
 
 export default function GroupChatScreen({ navigation, route }) {
-  const groupName   = route?.params?.groupName   || 'College Crew 🎓';
-  const groupEmoji  = route?.params?.groupEmoji  || '🎓';
-  const members     = route?.params?.members     || [];
-  const profileImage = route?.params?.profileImage || null;
+  const { groupId, groupName, groupImage, ownerId, token, displayName, profileImage } = route.params;
 
-  const [messages,        setMessages]        = useState(MOCK_MESSAGES);
-  const [inputText,       setInputText]       = useState('');
-  const [vibeCount,       setVibeCount]       = useState(MOCK_MESSAGES.length);
-  const [challengeReady,  setChallengeReady]  = useState(false);
-  const [challengeModal,  setChallengeModal]  = useState(false);
-  const [currentChallenge, setCurrentChallenge] = useState('');
-  const [spinning,        setSpinning]        = useState(false);
-  const [showChallenge,   setShowChallenge]   = useState(false);
-  const [infoModal,       setInfoModal]       = useState(false);
+  const [messages,    setMessages]    = useState([]);
+  const [members,     setMembers]     = useState([]);
+  const [nonMembers,  setNonMembers]  = useState([]);
+  const [group,       setGroup]       = useState(null);
+  const [inputText,   setInputText]   = useState('');
+  const [loading,     setLoading]     = useState(true);
+  const [sending,     setSending]     = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
 
-  // Animations
-  const scrollRef      = useRef(null);
-  const pulseAnim      = useRef(new Animated.Value(1)).current;
-  const vibeMeterAnim  = useRef(new Animated.Value(0)).current;
-  const fadeAnim       = useRef(new Animated.Value(0)).current;
-  const spinAnim       = useRef(new Animated.Value(0)).current;
-  const challengeFade  = useRef(new Animated.Value(0)).current;
+  // Modals
+  const [infoModal,   setInfoModal]   = useState(false);
+  const [editModal,   setEditModal]   = useState(false);
+  const [inviteModal, setInviteModal] = useState(false);
+
+  // Edit state
+  const [editName,    setEditName]    = useState(groupName);
+  const [editImage,   setEditImage]   = useState(groupImage || '');
+  const [saving,      setSaving]      = useState(false);
+
+  // Invite state
+  const [inviteSelected, setInviteSelected] = useState([]);
+  const [inviting,       setInviting]       = useState(false);
+
+  const scrollRef = useRef(null);
+  const pollRef   = useRef(null);
 
   useEffect(() => {
-    Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }).start();
+    fetchAll();
+    pollRef.current = setInterval(fetchAll, 3000);
+    return () => clearInterval(pollRef.current);
   }, []);
 
-  // Update vibe meter when messages change
-  useEffect(() => {
-    const progress = Math.min(vibeCount / VIBE_GOAL, 1);
-    Animated.timing(vibeMeterAnim, { toValue: progress, duration: 600, useNativeDriver: false }).start();
-    if (vibeCount >= VIBE_GOAL && !challengeReady) {
-      setChallengeReady(true);
-      startPulse();
+  const fetchAll = async () => {
+    try {
+      const data = await api.getGroupMessages(token, groupId);
+      setMessages(data.messages   || []);
+      setMembers(data.members     || []);
+      setNonMembers(data.non_members || []);
+      setGroup(data.group         || null);
+      // figure out who current user is from members
+      if (data.members) {
+        const me = data.members.find(m => m.is_owner && data.group?.owner_id === m.id)
+          || data.members[0];
+        setCurrentUser(data.group);
+      }
+    } catch (err) {
+      console.log('Group fetch error:', err.message);
+    } finally {
+      setLoading(false);
     }
-  }, [vibeCount]);
-
-  // Pulse animation for challenge button
-  const startPulse = () => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.08, duration: 700, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1,    duration: 700, useNativeDriver: true }),
-      ])
-    ).start();
   };
 
-  const sendMessage = () => {
-    if (!inputText.trim()) return;
-    const newMsg = {
-      id: Date.now(),
-      senderId: 0,
-      senderName: 'You',
-      senderEmoji: '🧑‍🎤',
-      text: inputText.trim(),
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      isMe: true,
-    };
-    setMessages(prev => [...prev, newMsg]);
-    setVibeCount(prev => prev + 1);
+  const sendMessage = async () => {
+    const text = inputText.trim();
+    if (!text || sending) return;
     setInputText('');
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+    setSending(true);
+    const temp = {
+      id: Date.now(), sender_id: 0, text,
+      sent_at: new Date().toISOString(), is_me: true,
+      is_system: false, sender_name: displayName, sender_image: profileImage || '',
+    };
+    setMessages(prev => [...prev, temp]);
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
+    try {
+      await api.sendGroupMessage(token, groupId, text);
+      await fetchAll();
+    } catch (err) {
+      console.log('Send error:', err.message);
+    } finally {
+      setSending(false);
+    }
   };
 
-  const spinWheel = () => {
-    setSpinning(true);
-    setShowChallenge(false);
-    challengeFade.setValue(0);
+  // ── Is current user the owner? ────────────────────────────────────
+  const isOwner = group?.owner_id != null && members.some(m => m.is_owner && m.id === group?.owner_id)
+    ? members.find(m => m.is_owner)?.id === members.find(m => m.is_owner)?.id
+    : false;
+  // Simpler: just check ownerId passed from route or group.owner_id
+  const amOwner = (group?.owner_id != null)
+    ? (ownerId != null ? group?.owner_id === ownerId : false)
+    : false;
+  // We need to know current user's own id — pass it or derive from members
+  // Best approach: fetch /me once
+  const [myId, setMyId] = useState(null);
+  useEffect(() => {
+    (async () => {
+      try {
+        const d = await api.me(token);
+        setMyId(d.user.id);
+      } catch {}
+    })();
+  }, []);
 
-    Animated.timing(spinAnim, { toValue: 1, duration: 1800, useNativeDriver: true }).start(() => {
-      const dare = CHALLENGE_DARES[Math.floor(Math.random() * CHALLENGE_DARES.length)];
-      setCurrentChallenge(dare);
-      setSpinning(false);
-      setShowChallenge(true);
-      spinAnim.setValue(0);
-      Animated.timing(challengeFade, { toValue: 1, duration: 500, useNativeDriver: true }).start();
+  const iAmOwner = myId != null && group?.owner_id === myId;
+
+  // ── Delete group ──────────────────────────────────────────────────
+  const handleDeleteGroup = () => {
+    Alert.alert(
+      '🗑 Delete group?',
+      `This will permanently delete "${group?.name}" and remove all messages and members. This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete', style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.deleteGroup(token, groupId);
+              navigation.reset({ index: 0, routes: [{ name: 'Home', params: { token, user: null } }] });
+            } catch (err) {
+              Alert.alert('Error', err.message);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // ── Leave group ───────────────────────────────────────────────────
+  const handleLeaveGroup = () => {
+    Alert.alert(
+      '👋 Leave group?',
+      `You'll be removed from "${group?.name}". You can rejoin if someone invites you again.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Leave', style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.leaveGroup(token, groupId);
+              navigation.goBack();
+            } catch (err) {
+              Alert.alert('Error', err.message);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // ── Save group edits ──────────────────────────────────────────────
+  const handleSaveEdit = async () => {
+    if (!editName.trim()) { Alert.alert('', 'Group name required'); return; }
+    setSaving(true);
+    try {
+      await api.updateGroup(token, groupId, { name: editName.trim(), image: editImage });
+      await fetchAll();
+      setEditModal(false);
+    } catch (err) {
+      Alert.alert('Error', err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ── Pick edit image ───────────────────────────────────────────────
+  const pickEditImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') { Alert.alert('Permission needed', 'Allow photo access.'); return; }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true, aspect: [1, 1], quality: 0.5, base64: true,
     });
+    if (!result.canceled) setEditImage(`data:image/jpeg;base64,${result.assets[0].base64}`);
   };
 
-  const spinRotate = spinAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0deg', '1440deg'],
-  });
+  // ── Send invites ──────────────────────────────────────────────────
+  const handleSendInvites = async () => {
+    if (inviteSelected.length === 0) { Alert.alert('', 'Select at least one person'); return; }
+    setInviting(true);
+    try {
+      const data = await api.inviteToGroup(token, groupId, inviteSelected);
+      setInviteModal(false);
+      setInviteSelected([]);
+      Alert.alert('📨 Invites sent!', data.message);
+    } catch (err) {
+      Alert.alert('Error', err.message);
+    } finally {
+      setInviting(false);
+    }
+  };
 
-  const vibeWidth = vibeMeterAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0%', '100%'],
-  });
+  const formatTime = (t) => {
+    if (!t) return '';
+    try { return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+    catch { return ''; }
+  };
 
-  const vibeColor = vibeMeterAnim.interpolate({
-    inputRange: [0, 0.5, 1],
-    outputRange: ['#B39DDB', '#7B5EA7', '#FF6B35'],
-  });
+  const currentGroupImage = (group?.image || groupImage || '').trim();
+  const currentGroupName  = group?.name || groupName;
+  const groupInitials     = currentGroupName.slice(0, 2).toUpperCase();
 
-  const progress = Math.min(Math.round((vibeCount / VIBE_GOAL) * 100), 100);
+  const openInfoModal = () => {
+    setEditName(currentGroupName);
+    setEditImage(currentGroupImage);
+    setInfoModal(true);
+  };
 
   return (
     <SafeAreaView style={styles.safe}>
 
       {/* ── Header ── */}
-      <Animated.View style={[styles.header, { opacity: fadeAnim }]}>
+      <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
           <Text style={styles.backText}>←</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.headerCenter} onPress={() => setInfoModal(true)} activeOpacity={0.8}>
-          <View style={styles.groupAvatarSmall}>
-            <Text style={styles.groupAvatarEmoji}>{groupEmoji}</Text>
+        <TouchableOpacity style={styles.headerCenter} onPress={openInfoModal} activeOpacity={0.8}>
+          <View style={styles.headerAvatarWrap}>
+            {currentGroupImage
+              ? <Image source={{ uri: currentGroupImage }} style={styles.headerAvatarImg} resizeMode="cover" />
+              : <View style={styles.headerAvatarFallback}>
+                  <Text style={styles.headerAvatarText}>{groupInitials}</Text>
+                </View>
+            }
           </View>
-          <View>
-            <Text style={styles.headerGroupName}>{groupName}</Text>
-            <Text style={styles.headerMemberCount}>{members.length > 0 ? members.length : 6} members · tap for info</Text>
+          <View style={{ flex: 1 }}>
+            <TypingTitle name={currentGroupName} />
+            <Text style={styles.headerSub}>
+              {members.length} member{members.length !== 1 ? 's' : ''} · tap to manage
+            </Text>
           </View>
         </TouchableOpacity>
-
-        {/* Challenge button — pulses when ready */}
-        <Animated.View style={{ transform: [{ scale: challengeReady ? pulseAnim : 1 }] }}>
-          <TouchableOpacity
-            style={[styles.challengeBtn, challengeReady && styles.challengeBtnReady]}
-            onPress={() => challengeReady && setChallengeModal(true)}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.challengeBtnText}>{challengeReady ? '🎰' : '🎯'}</Text>
-          </TouchableOpacity>
-        </Animated.View>
-      </Animated.View>
-
-      {/* ── Vibe Meter ── */}
-      <Animated.View style={[styles.vibeMeterWrap, { opacity: fadeAnim }]}>
-        <View style={styles.vibeMeterRow}>
-          <Text style={styles.vibeMeterLabel}>
-            {challengeReady ? '🔥 Challenge ready!' : `⚡ Vibe meter — ${progress}%`}
-          </Text>
-          <Text style={styles.vibeMeterCount}>{vibeCount} msgs</Text>
-        </View>
-        <View style={styles.vibeMeterBar}>
-          <Animated.View style={[styles.vibeMeterFill, { width: vibeWidth, backgroundColor: vibeColor }]} />
-        </View>
-      </Animated.View>
+      </View>
 
       {/* ── Messages ── */}
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}>
-        <ScrollView
-          ref={scrollRef}
-          style={styles.messageList}
-          contentContainerStyle={styles.messageListContent}
-          showsVerticalScrollIndicator={false}
-          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
-        >
-          {/* System message */}
-          <View style={styles.systemMsg}>
-            <Text style={styles.systemMsgText}>✦ Fun-Star created — let's get the vibe going!</Text>
-          </View>
-
-          {messages.map((msg, i) => {
-            const showName = !msg.isMe && (i === 0 || messages[i - 1]?.senderId !== msg.senderId);
-            return (
-              <View key={msg.id} style={[styles.msgRow, msg.isMe && styles.msgRowMe]}>
-                {/* Avatar for others */}
-                {!msg.isMe && (
-                  <View style={[styles.msgAvatar, { opacity: showName ? 1 : 0 }]}>
-                    <Text style={styles.msgAvatarEmoji}>{msg.senderEmoji}</Text>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        {loading ? (
+          <View style={styles.loadingWrap}><ActivityIndicator size="large" color="#7B5EA7" /></View>
+        ) : (
+          <ScrollView
+            ref={scrollRef}
+            style={styles.messageList}
+            contentContainerStyle={styles.messageListContent}
+            showsVerticalScrollIndicator={false}
+            onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
+          >
+            {messages.map((msg, i) => {
+              if (msg.is_system) return (
+                <View key={msg.id} style={styles.systemMsgWrap}>
+                  <View style={styles.systemMsg}>
+                    <Text style={styles.systemMsgText}>{msg.text}</Text>
                   </View>
-                )}
-
-                <View style={[styles.msgBubbleWrap, msg.isMe && styles.msgBubbleWrapMe]}>
-                  {showName && !msg.isMe && (
-                    <Text style={styles.msgSenderName}>{msg.senderName}</Text>
-                  )}
-                  <View style={[styles.msgBubble, msg.isMe ? styles.msgBubbleMe : styles.msgBubbleThem]}>
-                    <Text style={[styles.msgText, msg.isMe && styles.msgTextMe]}>{msg.text}</Text>
-                  </View>
-                  <Text style={[styles.msgTime, msg.isMe && styles.msgTimeMe]}>{msg.time}</Text>
                 </View>
-              </View>
-            );
-          })}
-        </ScrollView>
+              );
+              const showName = !msg.is_me && (i === 0 || messages[i-1]?.sender_id !== msg.sender_id || messages[i-1]?.is_system);
+              const showTime = i === 0 || new Date(msg.sent_at) - new Date(messages[i-1]?.sent_at) > 5*60*1000;
+              return (
+                <View key={msg.id}>
+                  {showTime && <Text style={styles.timeStamp}>{formatTime(msg.sent_at)}</Text>}
+                  <View style={[styles.msgRow, msg.is_me && styles.msgRowMe]}>
+                    {!msg.is_me && (
+                      <View style={styles.msgAvatar}>
+                        {msg.sender_image
+                          ? <Image source={{ uri: msg.sender_image }} style={styles.msgAvatarImg} />
+                          : <Text style={styles.msgAvatarText}>{msg.sender_name?.slice(0,1)}</Text>
+                        }
+                      </View>
+                    )}
+                    <View style={styles.msgContent}>
+                      {showName && <Text style={styles.msgSenderName}>{msg.sender_name}</Text>}
+                      <View style={[styles.msgBubble, msg.is_me ? styles.msgBubbleMe : styles.msgBubbleThem]}>
+                        <Text style={[styles.msgText, msg.is_me && styles.msgTextMe]}>{msg.text}</Text>
+                      </View>
+                    </View>
+                  </View>
+                </View>
+              );
+            })}
+          </ScrollView>
+        )}
 
-        {/* ── Input bar ── */}
         <View style={styles.inputBar}>
           <View style={styles.inputWrap}>
             <TextInput
               style={styles.input}
-              placeholder="Send a vibe..."
+              placeholder="Message the group..."
               placeholderTextColor="rgba(107,107,138,0.5)"
-              value={inputText}
-              onChangeText={setInputText}
-              multiline
-              maxLength={500}
-              autoCorrect={false}
-              returnKeyType="send"
-              onSubmitEditing={sendMessage}
-              blurOnSubmit={false}
+              value={inputText} onChangeText={setInputText}
+              multiline maxLength={500} autoCorrect={false} blurOnSubmit={false}
             />
           </View>
           <TouchableOpacity
-            style={[styles.sendBtn, !inputText.trim() && styles.sendBtnDisabled]}
-            onPress={sendMessage}
-            activeOpacity={0.85}
+            style={[styles.sendBtn, (!inputText.trim() || sending) && styles.sendBtnDisabled]}
+            onPress={sendMessage} activeOpacity={0.85} disabled={sending}
           >
-            <Text style={styles.sendBtnText}>↑</Text>
+            {sending
+              ? <ActivityIndicator color="#fff" size="small" />
+              : <Text style={styles.sendBtnText}>↑</Text>
+            }
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
 
-      {/* ── CHALLENGE MODAL ── */}
-      <Modal visible={challengeModal} transparent animationType="slide" onRequestClose={() => setChallengeModal(false)}>
+      {/* ══ GROUP INFO / MANAGEMENT MODAL ══ */}
+      <Modal visible={infoModal} transparent animationType="slide" onRequestClose={() => setInfoModal(false)}>
         <View style={styles.modalOverlay}>
-          <View style={styles.challengeSheet}>
+          <View style={styles.infoSheet}>
             <View style={styles.modalHandle} />
 
-            <Text style={styles.challengeSheetTitle}>🎰 Challenge Wheel</Text>
-            <Text style={styles.challengeSheetSub}>Your crew earned this — spin to reveal the dare!</Text>
-
-            {/* Wheel */}
-            <View style={styles.wheelSection}>
-              <Animated.Text style={[styles.wheelEmoji, spinning && { transform: [{ rotate: spinRotate }] }]}>
-                🎡
-              </Animated.Text>
+            {/* Group avatar */}
+            <View style={styles.infoAvatarWrap}>
+              {currentGroupImage
+                ? <Image source={{ uri: currentGroupImage }} style={styles.infoAvatar} resizeMode="cover" />
+                : <View style={styles.infoAvatarFallback}>
+                    <Text style={styles.infoAvatarText}>{groupInitials}</Text>
+                  </View>
+              }
             </View>
+            <Text style={styles.infoGroupName}>{currentGroupName}</Text>
+            <Text style={styles.infoMemberCount}>{members.length} members</Text>
 
-            {/* Challenge result */}
-            {showChallenge && (
-              <Animated.View style={[styles.challengeResult, { opacity: challengeFade }]}>
-                <Text style={styles.challengeResultLabel}>YOUR DARE</Text>
-                <Text style={styles.challengeResultText}>{currentChallenge}</Text>
-              </Animated.View>
+            {/* Owner actions */}
+            {iAmOwner && (
+              <View style={styles.actionsRow}>
+                <TouchableOpacity style={styles.actionBtn} onPress={() => { setInfoModal(false); setEditModal(true); }}>
+                  <Text style={styles.actionBtnIcon}>✏️</Text>
+                  <Text style={styles.actionBtnText}>Edit group</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.actionBtn} onPress={() => { setInfoModal(false); setInviteModal(true); }}>
+                  <Text style={styles.actionBtnIcon}>👤+</Text>
+                  <Text style={styles.actionBtnText}>Invite</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.actionBtn, styles.actionBtnDanger]} onPress={() => { setInfoModal(false); handleDeleteGroup(); }}>
+                  <Text style={styles.actionBtnIcon}>🗑</Text>
+                  <Text style={[styles.actionBtnText, { color: '#EF4444' }]}>Delete</Text>
+                </TouchableOpacity>
+              </View>
             )}
 
-            <TouchableOpacity
-              style={[styles.spinBtn, spinning && styles.spinBtnDisabled]}
-              onPress={spinWheel}
-              activeOpacity={0.85}
-            >
-              <Text style={styles.spinBtnText}>{spinning ? 'Spinning...' : showChallenge ? '🔄 Spin again' : '🎰 Spin the wheel!'}</Text>
-            </TouchableOpacity>
-
-            {showChallenge && (
-              <TouchableOpacity
-                style={styles.acceptBtn}
-                activeOpacity={0.85}
-                onPress={() => {
-                  setChallengeModal(false);
-                  setShowChallenge(false);
-                  setVibeCount(0);
-                  setChallengeReady(false);
-                  pulseAnim.setValue(1);
-                  vibeMeterAnim.setValue(0);
-                  setMessages(prev => [...prev, {
-                    id: Date.now(),
-                    senderId: -1,
-                    senderName: 'System',
-                    senderEmoji: '🎰',
-                    text: `🎰 Challenge accepted: "${currentChallenge}"`,
-                    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                    isMe: false,
-                    isSystem: true,
-                  }]);
-                }}
-              >
-                <Text style={styles.acceptBtnText}>✦ Accept this dare!</Text>
-              </TouchableOpacity>
+            {/* Member actions */}
+            {!iAmOwner && myId != null && (
+              <View style={styles.actionsRow}>
+                <TouchableOpacity style={styles.actionBtn} onPress={() => { setInfoModal(false); setInviteModal(true); }}>
+                  <Text style={styles.actionBtnIcon}>👤+</Text>
+                  <Text style={styles.actionBtnText}>Invite</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.actionBtn, styles.actionBtnDanger]} onPress={() => { setInfoModal(false); handleLeaveGroup(); }}>
+                  <Text style={styles.actionBtnIcon}>👋</Text>
+                  <Text style={[styles.actionBtnText, { color: '#EF4444' }]}>Leave</Text>
+                </TouchableOpacity>
+              </View>
             )}
 
-            <TouchableOpacity style={styles.modalCancel} onPress={() => setChallengeModal(false)}>
-              <Text style={styles.modalCancelText}>Close</Text>
+            <View style={styles.infoDivider} />
+            <Text style={styles.infoSectionLabel}>MEMBERS</Text>
+            <ScrollView style={{ maxHeight: 220 }} showsVerticalScrollIndicator={false}>
+              {members.map(m => {
+                const mi = m.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0,2);
+                return (
+                  <View key={m.id} style={styles.memberRow}>
+                    <View style={styles.memberAvatar}>
+                      {m.profile_image
+                        ? <Image source={{ uri: m.profile_image }} style={styles.memberAvatarImg} />
+                        : <Text style={styles.memberAvatarText}>{mi}</Text>
+                      }
+                    </View>
+                    <Text style={styles.memberName}>{m.name}</Text>
+                    {m.is_owner && (
+                      <View style={styles.ownerBadge}>
+                        <Text style={styles.ownerBadgeText}>👑 Owner</Text>
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+            </ScrollView>
+
+            <TouchableOpacity style={styles.closeBtn} onPress={() => setInfoModal(false)}>
+              <Text style={styles.closeBtnText}>Close</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      {/* ── GROUP INFO MODAL ── */}
-      <Modal visible={infoModal} transparent animationType="slide" onRequestClose={() => setInfoModal(false)}>
+      {/* ══ EDIT GROUP MODAL (owner only) ══ */}
+      <Modal visible={editModal} transparent animationType="slide" onRequestClose={() => setEditModal(false)}>
         <View style={styles.modalOverlay}>
-          <View style={styles.infoSheet}>
+          <View style={styles.editSheet}>
             <View style={styles.modalHandle} />
-            <View style={styles.infoGroupAvatar}>
-              <Text style={styles.infoGroupAvatarEmoji}>{groupEmoji}</Text>
-            </View>
-            <Text style={styles.infoGroupName}>{groupName}</Text>
-            <Text style={styles.infoMemberLabel}>MEMBERS</Text>
-            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 280 }}>
-              {(members.length > 0 ? members : [
-                { id: 1, name: 'Marco V.',  emoji: '🧑‍🎤', isMe: false },
-                { id: 2, name: 'Sarah K.',  emoji: '👩‍💻', isMe: false },
-                { id: 3, name: 'Jordan T.', emoji: '🧙',  isMe: false },
-                { id: 0, name: 'You',       emoji: '🧑‍🎤', isMe: true  },
-              ]).map(m => (
-                <View key={m.id} style={styles.infoMemberRow}>
-                  <View style={styles.infoMemberAvatar}>
-                    {m.isMe && profileImage
-                      ? <Image source={{ uri: profileImage }} style={styles.infoMemberAvatarImg} />
-                      : <Text style={styles.infoMemberEmoji}>{m.emoji}</Text>
-                    }
+            <Text style={styles.editSheetTitle}>Edit Vibe Squad</Text>
+
+            {/* Image picker */}
+            <TouchableOpacity style={styles.editAvatarWrap} onPress={pickEditImage} activeOpacity={0.85}>
+              {editImage
+                ? <Image source={{ uri: editImage }} style={styles.editAvatar} resizeMode="cover" />
+                : <View style={styles.editAvatarFallback}>
+                    <Text style={styles.editAvatarText}>{editName.slice(0,2).toUpperCase() || 'VS'}</Text>
                   </View>
-                  <Text style={styles.infoMemberName}>{m.name}</Text>
-                  {m.isMe && <View style={styles.youBadge}><Text style={styles.youBadgeText}>You</Text></View>}
-                </View>
-              ))}
+              }
+              <View style={styles.editAvatarCameraBadge}>
+                <Text style={{ fontSize: 14 }}>📷</Text>
+              </View>
+            </TouchableOpacity>
+
+            <Text style={styles.editLabel}>GROUP NAME</Text>
+            <TextInput
+              style={styles.editInput}
+              value={editName}
+              onChangeText={setEditName}
+              placeholder="Group name"
+              placeholderTextColor="rgba(107,107,138,0.4)"
+              autoCapitalize="words"
+              maxLength={40}
+            />
+
+            <TouchableOpacity
+              style={[styles.btnPrimary, saving && styles.btnDisabled]}
+              onPress={handleSaveEdit} activeOpacity={0.85} disabled={saving}
+            >
+              {saving
+                ? <ActivityIndicator color="#fff" />
+                : <Text style={styles.btnPrimaryText}>Save changes ✦</Text>
+              }
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.closeBtn} onPress={() => setEditModal(false)}>
+              <Text style={styles.closeBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ══ INVITE MODAL ══ */}
+      <Modal visible={inviteModal} transparent animationType="slide" onRequestClose={() => setInviteModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.editSheet}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.editSheetTitle}>Invite to Vibe Squad</Text>
+            <Text style={styles.editSheetSub}>
+              {nonMembers.length === 0 ? 'All your contacts are already in this group!' : 'Select contacts to invite'}
+            </Text>
+
+            <ScrollView style={{ maxHeight: 300 }} showsVerticalScrollIndicator={false}>
+              {nonMembers.map(nm => {
+                const ni = nm.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0,2);
+                const sel = inviteSelected.includes(nm.id);
+                return (
+                  <TouchableOpacity
+                    key={nm.id}
+                    style={[styles.invitePersonRow, sel && styles.invitePersonRowSel]}
+                    onPress={() => setInviteSelected(prev => sel ? prev.filter(x => x !== nm.id) : [...prev, nm.id])}
+                    activeOpacity={0.75}
+                  >
+                    <View style={styles.invitePersonAvatar}>
+                      {nm.profile_image
+                        ? <Image source={{ uri: nm.profile_image }} style={styles.invitePersonAvatarImg} />
+                        : <Text style={styles.invitePersonAvatarText}>{ni}</Text>
+                      }
+                    </View>
+                    <Text style={styles.invitePersonName}>{nm.name}</Text>
+                    <View style={[styles.checkCircle, sel && styles.checkCircleSel]}>
+                      {sel && <Text style={styles.checkMark}>✓</Text>}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
-            <TouchableOpacity style={styles.modalCancel} onPress={() => setInfoModal(false)}>
-              <Text style={styles.modalCancelText}>Close</Text>
+
+            {nonMembers.length > 0 && (
+              <TouchableOpacity
+                style={[styles.btnPrimary, { marginTop: 16 }, (inviting || inviteSelected.length === 0) && styles.btnDisabled]}
+                onPress={handleSendInvites} activeOpacity={0.85}
+                disabled={inviting || inviteSelected.length === 0}
+              >
+                {inviting
+                  ? <ActivityIndicator color="#fff" />
+                  : <Text style={styles.btnPrimaryText}>
+                      Send {inviteSelected.length > 0 ? `${inviteSelected.length} ` : ''}invite{inviteSelected.length !== 1 ? 's' : ''} 📨
+                    </Text>
+                }
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={styles.closeBtn} onPress={() => { setInviteModal(false); setInviteSelected([]); }}>
+              <Text style={styles.closeBtnText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -341,91 +526,96 @@ export default function GroupChatScreen({ navigation, route }) {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#FAFAF8' },
+  safe: { flex:1, backgroundColor:'#FAFAF8' },
+  header: { flexDirection:'row', alignItems:'center', paddingHorizontal:16, paddingVertical:10, borderBottomWidth:1, borderBottomColor:'rgba(107,107,138,0.08)', backgroundColor:'#FAFAF8', gap:10 },
+  backBtn: { padding:4 },
+  backText: { fontSize:22, color:'#1A1A2E' },
+  headerCenter: { flex:1, flexDirection:'row', alignItems:'center', gap:10 },
+  headerAvatarWrap: { width:42, height:42, borderRadius:12, overflow:'hidden', backgroundColor:'#7B5EA7' },
+  headerAvatarImg: { width:42, height:42 },
+  headerAvatarFallback: { width:42, height:42, alignItems:'center', justifyContent:'center' },
+  headerAvatarText: { color:'#fff', fontSize:15, fontWeight:'700' },
+  headerName: { fontSize:16, color:'#1A1A2E', fontWeight:'600', fontStyle:'italic' },
+  headerSub: { fontSize:10, color:'#B39DDB', marginTop:1, fontStyle:'italic' },
+  loadingWrap: { flex:1, alignItems:'center', justifyContent:'center' },
+  messageList: { flex:1 },
+  messageListContent: { padding:16, paddingBottom:8 },
+  systemMsgWrap: { alignItems:'center', marginVertical:8 },
+  systemMsg: { backgroundColor:'rgba(123,94,167,0.1)', borderRadius:20, paddingHorizontal:16, paddingVertical:7, borderWidth:1, borderColor:'rgba(123,94,167,0.15)' },
+  systemMsgText: { fontSize:13, color:'#7B5EA7', fontStyle:'italic', textAlign:'center' },
+  timeStamp: { textAlign:'center', fontSize:11, color:'rgba(107,107,138,0.5)', marginVertical:8 },
+  msgRow: { flexDirection:'row', alignItems:'flex-end', marginBottom:4, gap:6 },
+  msgRowMe: { justifyContent:'flex-end' },
+  msgAvatar: { width:28, height:28, borderRadius:14, backgroundColor:'#7B5EA7', alignItems:'center', justifyContent:'center', overflow:'hidden', marginBottom:2 },
+  msgAvatarImg: { width:28, height:28, borderRadius:14 },
+  msgAvatarText: { color:'#fff', fontSize:12, fontWeight:'600' },
+  msgContent: { maxWidth:'72%' },
+  msgSenderName: { fontSize:11, color:'#B39DDB', marginBottom:3, marginLeft:4 },
+  msgBubble: { borderRadius:18, paddingHorizontal:14, paddingVertical:10 },
+  msgBubbleMe: { backgroundColor:'#1A1A2E', borderBottomRightRadius:4 },
+  msgBubbleThem: { backgroundColor:'#F0EFF8', borderBottomLeftRadius:4 },
+  msgText: { fontSize:15, color:'#1A1A2E', lineHeight:21 },
+  msgTextMe: { color:'#fff' },
+  inputBar: { flexDirection:'row', alignItems:'flex-end', paddingHorizontal:12, paddingVertical:10, borderTopWidth:1, borderTopColor:'rgba(107,107,138,0.08)', gap:8, backgroundColor:'#FAFAF8' },
+  inputWrap: { flex:1, backgroundColor:'#F0EFF8', borderRadius:22, paddingHorizontal:16, paddingVertical:10, minHeight:44, justifyContent:'center' },
+  input: { fontSize:15, color:'#1A1A2E', maxHeight:100, padding:0 },
+  sendBtn: { width:44, height:44, borderRadius:22, backgroundColor:'#1A1A2E', alignItems:'center', justifyContent:'center', shadowColor:'#1A1A2E', shadowOffset:{width:0,height:3}, shadowOpacity:0.2, shadowRadius:6, elevation:3 },
+  sendBtnDisabled: { backgroundColor:'rgba(107,107,138,0.2)', shadowOpacity:0, elevation:0 },
+  sendBtnText: { color:'#fff', fontSize:20, fontWeight:'700', lineHeight:24 },
 
-  // Header
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(107,107,138,0.08)', gap: 10, backgroundColor: '#FAFAF8' },
-  backBtn: { padding: 4 },
-  backText: { fontSize: 22, color: '#1A1A2E' },
-  headerCenter: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  groupAvatarSmall: { width: 40, height: 40, borderRadius: 14, backgroundColor: 'rgba(123,94,167,0.12)', alignItems: 'center', justifyContent: 'center' },
-  groupAvatarEmoji: { fontSize: 20 },
-  headerGroupName: { fontSize: 16, color: '#1A1A2E', fontWeight: '600' },
-  headerMemberCount: { fontSize: 11, color: '#6B6B8A', marginTop: 1 },
-  challengeBtn: { width: 40, height: 40, borderRadius: 14, backgroundColor: '#F0EFF8', alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: 'rgba(107,107,138,0.15)' },
-  challengeBtnReady: { backgroundColor: 'rgba(255,107,53,0.1)', borderColor: '#FF6B35', shadowColor: '#FF6B35', shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 0 }, elevation: 4 },
-  challengeBtnText: { fontSize: 20 },
+  // ── Info modal ──
+  modalOverlay: { flex:1, backgroundColor:'rgba(26,26,46,0.5)', justifyContent:'flex-end' },
+  infoSheet: { backgroundColor:'#FAFAF8', borderTopLeftRadius:32, borderTopRightRadius:32, padding:24, paddingBottom:48, maxHeight:'90%' },
+  editSheet: { backgroundColor:'#FAFAF8', borderTopLeftRadius:32, borderTopRightRadius:32, padding:28, paddingBottom:48 },
+  modalHandle: { width:40, height:4, borderRadius:2, backgroundColor:'rgba(107,107,138,0.2)', alignSelf:'center', marginBottom:20 },
+  infoAvatarWrap: { alignItems:'center', marginBottom:10 },
+  infoAvatar: { width:72, height:72, borderRadius:20 },
+  infoAvatarFallback: { width:72, height:72, borderRadius:20, backgroundColor:'#7B5EA7', alignItems:'center', justifyContent:'center' },
+  infoAvatarText: { color:'#fff', fontSize:24, fontWeight:'700' },
+  infoGroupName: { fontStyle:'italic', fontSize:22, color:'#1A1A2E', fontWeight:'300', textAlign:'center', marginBottom:3 },
+  infoMemberCount: { fontSize:13, color:'#B39DDB', textAlign:'center', marginBottom:16 },
 
-  // Vibe meter
-  vibeMeterWrap: { paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#FAFAF8', borderBottomWidth: 1, borderBottomColor: 'rgba(107,107,138,0.06)' },
-  vibeMeterRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 },
-  vibeMeterLabel: { fontSize: 11, color: '#6B6B8A', fontStyle: 'italic' },
-  vibeMeterCount: { fontSize: 11, color: '#B39DDB', fontWeight: '500' },
-  vibeMeterBar: { height: 4, borderRadius: 2, backgroundColor: 'rgba(107,107,138,0.1)', overflow: 'hidden' },
-  vibeMeterFill: { height: '100%', borderRadius: 2 },
+  actionsRow: { flexDirection:'row', gap:10, justifyContent:'center', marginBottom:16 },
+  actionBtn: { alignItems:'center', backgroundColor:'#F0EFF8', borderRadius:16, paddingVertical:12, paddingHorizontal:18, gap:4, minWidth:80 },
+  actionBtnDanger: { backgroundColor:'rgba(239,68,68,0.08)' },
+  actionBtnIcon: { fontSize:20 },
+  actionBtnText: { fontSize:12, color:'#1A1A2E', fontWeight:'500' },
 
-  // Messages
-  messageList: { flex: 1 },
-  messageListContent: { padding: 16, gap: 4 },
+  infoDivider: { height:1, backgroundColor:'rgba(107,107,138,0.1)', marginBottom:14 },
+  infoSectionLabel: { fontSize:11, letterSpacing:1, textTransform:'uppercase', color:'#6B6B8A', fontWeight:'600', marginBottom:10 },
+  memberRow: { flexDirection:'row', alignItems:'center', paddingVertical:10, gap:12, borderBottomWidth:1, borderBottomColor:'rgba(107,107,138,0.06)' },
+  memberAvatar: { width:38, height:38, borderRadius:19, backgroundColor:'#7B5EA7', alignItems:'center', justifyContent:'center', overflow:'hidden' },
+  memberAvatarImg: { width:38, height:38, borderRadius:19 },
+  memberAvatarText: { color:'#fff', fontSize:13, fontWeight:'600' },
+  memberName: { flex:1, fontSize:15, color:'#1A1A2E' },
+  ownerBadge: { backgroundColor:'rgba(255,215,0,0.15)', borderRadius:10, paddingHorizontal:8, paddingVertical:3, borderWidth:1, borderColor:'rgba(255,215,0,0.4)' },
+  ownerBadgeText: { fontSize:11, color:'#B8860B', fontWeight:'600' },
+  closeBtn: { alignItems:'center', paddingVertical:12, marginTop:4 },
+  closeBtnText: { fontSize:15, color:'#6B6B8A', fontStyle:'italic' },
 
-  systemMsg: { alignItems: 'center', marginVertical: 12 },
-  systemMsgText: { fontSize: 12, color: '#B39DDB', fontStyle: 'italic', textAlign: 'center', backgroundColor: 'rgba(179,157,219,0.1)', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 12 },
+  // ── Edit modal ──
+  editSheetTitle: { fontStyle:'italic', fontSize:24, color:'#1A1A2E', fontWeight:'300', textAlign:'center', marginBottom:4 },
+  editSheetSub: { fontSize:13, color:'#6B6B8A', textAlign:'center', marginBottom:20, fontStyle:'italic' },
+  editAvatarWrap: { alignSelf:'center', position:'relative', marginBottom:20 },
+  editAvatar: { width:80, height:80, borderRadius:20 },
+  editAvatarFallback: { width:80, height:80, borderRadius:20, backgroundColor:'#7B5EA7', alignItems:'center', justifyContent:'center' },
+  editAvatarText: { color:'#fff', fontSize:26, fontWeight:'700' },
+  editAvatarCameraBadge: { position:'absolute', bottom:-4, right:-4, width:28, height:28, borderRadius:14, backgroundColor:'#fff', alignItems:'center', justifyContent:'center', shadowColor:'#000', shadowOpacity:0.1, shadowRadius:4, elevation:3 },
+  editLabel: { fontSize:11, letterSpacing:0.9, textTransform:'uppercase', color:'#6B6B8A', marginBottom:6, marginLeft:2, fontWeight:'500' },
+  editInput: { backgroundColor:'#F0EFF8', borderRadius:14, borderWidth:1.5, borderColor:'transparent', padding:14, fontSize:17, color:'#1A1A2E', fontStyle:'italic', marginBottom:20 },
 
-  msgRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 6, marginBottom: 2 },
-  msgRowMe: { flexDirection: 'row-reverse' },
-  msgAvatar: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#F0EFF8', alignItems: 'center', justifyContent: 'center' },
-  msgAvatarEmoji: { fontSize: 14 },
-  msgBubbleWrap: { maxWidth: '75%' },
-  msgBubbleWrapMe: { alignItems: 'flex-end' },
-  msgSenderName: { fontSize: 11, color: '#7B5EA7', fontWeight: '500', marginBottom: 3, marginLeft: 4 },
-  msgBubble: { borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10 },
-  msgBubbleMe: { backgroundColor: '#1A1A2E', borderBottomRightRadius: 4 },
-  msgBubbleThem: { backgroundColor: '#F0EFF8', borderBottomLeftRadius: 4 },
-  msgText: { fontSize: 15, color: '#1A1A2E', lineHeight: 20 },
-  msgTextMe: { color: '#fff' },
-  msgTime: { fontSize: 10, color: 'rgba(107,107,138,0.5)', marginTop: 3, marginLeft: 4 },
-  msgTimeMe: { marginLeft: 0, marginRight: 4 },
+  // ── Invite modal ──
+  invitePersonRow: { flexDirection:'row', alignItems:'center', paddingVertical:12, paddingHorizontal:4, borderRadius:14, marginBottom:2, gap:12 },
+  invitePersonRowSel: { backgroundColor:'rgba(123,94,167,0.07)' },
+  invitePersonAvatar: { width:44, height:44, borderRadius:22, backgroundColor:'#7B5EA7', alignItems:'center', justifyContent:'center', overflow:'hidden' },
+  invitePersonAvatarImg: { width:44, height:44, borderRadius:22 },
+  invitePersonAvatarText: { color:'#fff', fontSize:15, fontWeight:'600' },
+  invitePersonName: { flex:1, fontSize:15, color:'#1A1A2E' },
+  checkCircle: { width:24, height:24, borderRadius:12, borderWidth:2, borderColor:'rgba(107,107,138,0.3)', alignItems:'center', justifyContent:'center' },
+  checkCircleSel: { backgroundColor:'#7B5EA7', borderColor:'#7B5EA7' },
+  checkMark: { color:'#fff', fontSize:13, fontWeight:'700' },
 
-  // Input
-  inputBar: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: 'rgba(107,107,138,0.08)', gap: 8, backgroundColor: '#FAFAF8' },
-  inputWrap: { flex: 1, backgroundColor: '#F0EFF8', borderRadius: 22, paddingHorizontal: 16, paddingVertical: 10, minHeight: 44, justifyContent: 'center' },
-  input: { fontSize: 15, color: '#1A1A2E', maxHeight: 100, padding: 0 },
-  sendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#1A1A2E', alignItems: 'center', justifyContent: 'center', shadowColor: '#1A1A2E', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.2, shadowRadius: 6, elevation: 3 },
-  sendBtnDisabled: { backgroundColor: 'rgba(107,107,138,0.2)', shadowOpacity: 0, elevation: 0 },
-  sendBtnText: { color: '#fff', fontSize: 20, fontWeight: '700', lineHeight: 24 },
-
-  // Modals
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(26,26,46,0.45)', justifyContent: 'flex-end' },
-  modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: 'rgba(107,107,138,0.2)', alignSelf: 'center', marginBottom: 20 },
-  modalCancel: { alignItems: 'center', paddingVertical: 12 },
-  modalCancelText: { fontSize: 15, color: '#6B6B8A', fontStyle: 'italic' },
-
-  // Challenge modal
-  challengeSheet: { backgroundColor: '#FAFAF8', borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: 28, paddingBottom: 44 },
-  challengeSheetTitle: { fontStyle: 'italic', fontSize: 28, color: '#1A1A2E', fontWeight: '300', textAlign: 'center' },
-  challengeSheetSub: { fontSize: 13, color: '#6B6B8A', textAlign: 'center', marginTop: 6, marginBottom: 24, fontStyle: 'italic' },
-  wheelSection: { alignItems: 'center', marginBottom: 24 },
-  wheelEmoji: { fontSize: 90 },
-  challengeResult: { backgroundColor: 'rgba(123,94,167,0.07)', borderRadius: 20, padding: 20, marginBottom: 20, borderWidth: 1, borderColor: 'rgba(123,94,167,0.2)' },
-  challengeResultLabel: { fontSize: 10, letterSpacing: 1.5, textTransform: 'uppercase', color: '#B39DDB', marginBottom: 8, textAlign: 'center' },
-  challengeResultText: { fontSize: 17, color: '#1A1A2E', textAlign: 'center', lineHeight: 24, fontWeight: '500' },
-  spinBtn: { backgroundColor: '#FF6B35', borderRadius: 16, paddingVertical: 16, alignItems: 'center', marginBottom: 10, shadowColor: '#FF6B35', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 10, elevation: 4 },
-  spinBtnDisabled: { backgroundColor: 'rgba(107,107,138,0.2)', shadowOpacity: 0, elevation: 0 },
-  spinBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  acceptBtn: { backgroundColor: '#1A1A2E', borderRadius: 16, paddingVertical: 16, alignItems: 'center', marginBottom: 4, shadowColor: '#1A1A2E', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 10, elevation: 3 },
-  acceptBtnText: { color: '#fff', fontSize: 15, fontWeight: '500' },
-
-  // Info modal
-  infoSheet: { backgroundColor: '#FAFAF8', borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: 28, paddingBottom: 44 },
-  infoGroupAvatar: { width: 72, height: 72, borderRadius: 22, backgroundColor: 'rgba(123,94,167,0.1)', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', marginBottom: 12, borderWidth: 1.5, borderColor: 'rgba(123,94,167,0.2)' },
-  infoGroupAvatarEmoji: { fontSize: 36 },
-  infoGroupName: { fontStyle: 'italic', fontSize: 24, color: '#1A1A2E', fontWeight: '300', textAlign: 'center', marginBottom: 20 },
-  infoMemberLabel: { fontSize: 11, letterSpacing: 0.9, textTransform: 'uppercase', color: '#6B6B8A', fontWeight: '500', marginBottom: 12 },
-  infoMemberRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(107,107,138,0.07)' },
-  infoMemberAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#F0EFF8', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
-  infoMemberAvatarImg: { width: 40, height: 40, borderRadius: 20 },
-  infoMemberEmoji: { fontSize: 20 },
-  infoMemberName: { flex: 1, fontSize: 15, color: '#1A1A2E', fontWeight: '500' },
-  youBadge: { backgroundColor: 'rgba(123,94,167,0.1)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4 },
-  youBadgeText: { fontSize: 11, color: '#7B5EA7', fontWeight: '600' },
+  btnPrimary: { backgroundColor:'#1A1A2E', borderRadius:16, paddingVertical:16, alignItems:'center', shadowColor:'#1A1A2E', shadowOffset:{width:0,height:6}, shadowOpacity:0.22, shadowRadius:14, elevation:5 },
+  btnPrimaryText: { color:'#fff', fontSize:16, fontWeight:'500', letterSpacing:0.3 },
+  btnDisabled: { backgroundColor:'rgba(107,107,138,0.2)', shadowOpacity:0, elevation:0 },
 });
