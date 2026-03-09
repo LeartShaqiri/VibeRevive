@@ -64,16 +64,48 @@ export const api = {
     if (!res.ok) throw new Error(data.detail || "Failed to load messages");
     return data;
   },
-  sendMessage: async (token, receiverId, text) => {
+  // Updated: supports msg_type (text, image, gif, voice)
+  sendMessage: async (token, receiverId, text, msgType = 'text') => {
     const res  = await fetch(`${API_URL}/messages/send`, { method:"POST",
       headers:{"Content-Type":"application/json", Authorization:`Bearer ${token}`},
-      body: JSON.stringify({ receiver_id:receiverId, text }) });
+      body: JSON.stringify({ receiver_id:receiverId, text, msg_type: msgType }) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Failed to send");
     return data;
   },
 
-  // ── Groups ─────────────────────────────────────────────────────
+  // ── Contact actions ────────────────────────────────────────────────
+  setNickname: async (token, contactId, nickname) => {
+    const res  = await fetch(`${API_URL}/contacts/${contactId}/nickname`, { method:"POST",
+      headers:{"Content-Type":"application/json", Authorization:`Bearer ${token}`},
+      body: JSON.stringify({ nickname }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Failed to set nickname");
+    return data;
+  },
+  blockUser: async (token, contactId) => {
+    const res  = await fetch(`${API_URL}/contacts/${contactId}/block`, { method:"POST",
+      headers:{ Authorization:`Bearer ${token}` } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Failed to block");
+    return data;
+  },
+  reportUser: async (token, contactId) => {
+    const res  = await fetch(`${API_URL}/contacts/${contactId}/report`, { method:"POST",
+      headers:{ Authorization:`Bearer ${token}` } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Failed to report");
+    return data;
+  },
+  deleteChat: async (token, contactId) => {
+    const res  = await fetch(`${API_URL}/messages/${contactId}`, { method:"DELETE",
+      headers:{ Authorization:`Bearer ${token}` } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Failed to delete chat");
+    return data;
+  },
+
+  // ── Groups ─────────────────────────────────────────────────────────
   createGroup: async (token, name, image, inviteUserIds) => {
     const res  = await fetch(`${API_URL}/groups/create`, { method:"POST",
       headers:{"Content-Type":"application/json", Authorization:`Bearer ${token}`},

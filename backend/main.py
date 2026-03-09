@@ -116,6 +116,35 @@ def init_db():
             UNIQUE(group_id, invitee_id)
         )
     """)
+
+    # ── NEW TABLES ────────────────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS contact_nicknames (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            contact_id INTEGER NOT NULL,
+            nickname TEXT DEFAULT '',
+            UNIQUE(user_id, contact_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS blocked_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            blocked_id INTEGER NOT NULL,
+            blocked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, blocked_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reporter_id INTEGER NOT NULL,
+            reported_id INTEGER NOT NULL,
+            reported_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -158,7 +187,7 @@ def pub(u):
         "name_changed_at": u["name_changed_at"] or "",
     }
 
-# ── Schemas ──────────────────────────────────────────────────────────
+# ── Schemas ───────────────────────────────────────────────────────────
 class RegisterRequest(BaseModel):
     first_name: str; last_name: str; email: str; phone: str = ""; password: str
 class LoginRequest(BaseModel):
@@ -172,7 +201,7 @@ class FriendRequestSend(BaseModel):
 class FriendRequestRespond(BaseModel):
     request_id: int; action: str
 class SendMessageRequest(BaseModel):
-    receiver_id: int; text: str
+    receiver_id: int; text: str; msg_type: str = "text"   # ← updated
 class CreateGroupRequest(BaseModel):
     name: str; image: str = ""; invite_user_ids: List[int] = []
 class UpdateGroupRequest(BaseModel):
@@ -183,6 +212,8 @@ class SendGroupMessageRequest(BaseModel):
     group_id: int; text: str
 class InviteToGroupRequest(BaseModel):
     user_ids: List[int]
+class SetNicknameRequest(BaseModel):           # ← new
+    nickname: str = ""
 
 # ── Auth ──────────────────────────────────────────────────────────────
 @app.get("/")
@@ -307,7 +338,6 @@ def respond_request(data: FriendRequestRespond, cu: dict = Depends(get_current_u
 @app.get("/contacts")
 def get_contacts(cu: dict = Depends(get_current_user)):
     conn = get_db()
-    # Regular contacts
     rows = conn.execute("""
         SELECT u.id, u.first_name, u.last_name, u.vibe_code,
                u.profile_image, u.profile_border, u.bio, u.vibe_tags, u.main_vibe,
@@ -340,7 +370,6 @@ def get_contacts(cu: dict = Depends(get_current_user)):
             "unread":r["unread"] or 0
         })
 
-    # Also include non-contacts who sent a pending group invite DM
     invite_senders = conn.execute("""
         SELECT DISTINCT u.id, u.first_name, u.last_name, u.vibe_code,
                u.profile_image, u.profile_border, u.bio, u.vibe_tags, u.main_vibe,
@@ -369,7 +398,6 @@ def get_contacts(cu: dict = Depends(get_current_user)):
                 "unread":r["unread"] or 0
             })
 
-    # Sort by last_time descending
     result.sort(key=lambda x: x["last_time"] or "", reverse=True)
     conn.close()
     return {"contacts": result}
@@ -382,15 +410,14 @@ def send_message(data: SendMessageRequest, cu: dict = Depends(get_current_user))
     if not conn.execute("SELECT id FROM contacts WHERE user_id=? AND contact_id=?",
                         (cu["id"], data.receiver_id)).fetchone():
         conn.close(); raise HTTPException(403, "Not in your contacts")
-    conn.execute("INSERT INTO messages (sender_id,receiver_id,text) VALUES (?,?,?)",
-                 (cu["id"], data.receiver_id, data.text.strip()))
+    conn.execute("INSERT INTO messages (sender_id,receiver_id,text,msg_type) VALUES (?,?,?,?)",
+                 (cu["id"], data.receiver_id, data.text.strip(), data.msg_type))
     conn.commit(); conn.close()
     return {"message": "Sent!"}
 
 @app.get("/messages/{contact_id}")
 def get_messages(contact_id: int, cu: dict = Depends(get_current_user)):
     conn = get_db()
-    # Mark all messages from this sender as read
     conn.execute("UPDATE messages SET is_read=1 WHERE sender_id=? AND receiver_id=?",
                  (contact_id, cu["id"]))
     conn.commit()
@@ -401,6 +428,14 @@ def get_messages(contact_id: int, cu: dict = Depends(get_current_user)):
         WHERE (m.sender_id=? AND m.receiver_id=?) OR (m.sender_id=? AND m.receiver_id=?)
         ORDER BY m.sent_at ASC
     """, (cu["id"],contact_id,contact_id,cu["id"])).fetchall()
+
+    # Fetch nickname for this contact
+    nn_row = conn.execute(
+        "SELECT nickname FROM contact_nicknames WHERE user_id=? AND contact_id=?",
+        (cu["id"], contact_id)
+    ).fetchone()
+    nickname = nn_row["nickname"] if nn_row else ""
+
     result = []
     for r in rows:
         msg = {
@@ -425,7 +460,6 @@ def get_messages(contact_id: int, cu: dict = Depends(get_current_user)):
                     "status":      inv["status"],
                 }
             else:
-                # Group was deleted — show a tombstone
                 msg["group_invite"] = {
                     "invite_id":   r["group_invite_id"],
                     "group_id":    None,
@@ -435,7 +469,50 @@ def get_messages(contact_id: int, cu: dict = Depends(get_current_user)):
                 }
         result.append(msg)
     conn.close()
-    return {"messages": result}
+    return {"messages": result, "nickname": nickname}
+
+# ── Delete chat (clears messages, removes from contacts until next msg) ─
+@app.delete("/messages/{contact_id}")
+def delete_chat(contact_id: int, cu: dict = Depends(get_current_user)):
+    conn = get_db()
+    conn.execute("""
+        DELETE FROM messages
+        WHERE (sender_id=? AND receiver_id=?) OR (sender_id=? AND receiver_id=?)
+    """, (cu["id"], contact_id, contact_id, cu["id"]))
+    conn.execute("DELETE FROM contacts WHERE user_id=? AND contact_id=?", (cu["id"], contact_id))
+    conn.commit(); conn.close()
+    return {"message": "Chat deleted."}
+
+# ── Set nickname for a contact ────────────────────────────────────────
+@app.post("/contacts/{contact_id}/nickname")
+def set_nickname(contact_id: int, data: SetNicknameRequest, cu: dict = Depends(get_current_user)):
+    conn = get_db()
+    conn.execute("""
+        INSERT INTO contact_nicknames (user_id, contact_id, nickname)
+        VALUES (?,?,?)
+        ON CONFLICT(user_id, contact_id) DO UPDATE SET nickname=excluded.nickname
+    """, (cu["id"], contact_id, data.nickname.strip()))
+    conn.commit(); conn.close()
+    return {"message": "Nickname saved!"}
+
+# ── Block a user ──────────────────────────────────────────────────────
+@app.post("/contacts/{contact_id}/block")
+def block_user(contact_id: int, cu: dict = Depends(get_current_user)):
+    conn = get_db()
+    conn.execute("INSERT OR IGNORE INTO blocked_users (user_id, blocked_id) VALUES (?,?)",
+                 (cu["id"], contact_id))
+    conn.execute("DELETE FROM contacts WHERE user_id=? AND contact_id=?", (cu["id"], contact_id))
+    conn.commit(); conn.close()
+    return {"message": "User blocked."}
+
+# ── Report a user ─────────────────────────────────────────────────────
+@app.post("/contacts/{contact_id}/report")
+def report_user(contact_id: int, cu: dict = Depends(get_current_user)):
+    conn = get_db()
+    conn.execute("INSERT INTO reports (reporter_id, reported_id) VALUES (?,?)",
+                 (cu["id"], contact_id))
+    conn.commit(); conn.close()
+    return {"message": "Report submitted."}
 
 # ── Groups ────────────────────────────────────────────────────────────
 @app.post("/groups/create")
@@ -512,7 +589,6 @@ def get_group_messages(group_id: int, cu: dict = Depends(get_current_user)):
         WHERE gm.group_id=? AND gm.status='accepted'
     """, (group_id,)).fetchall()
     group = conn.execute("SELECT * FROM groups WHERE id=?", (group_id,)).fetchone()
-    # non-members who can still be invited (contacts not already in group)
     non_members = conn.execute("""
         SELECT u.id, u.first_name, u.last_name, u.profile_image
         FROM contacts c JOIN users u ON u.id=c.contact_id
@@ -547,7 +623,6 @@ def send_group_message(group_id: int, data: SendGroupMessageRequest, cu: dict = 
     conn.commit(); conn.close()
     return {"message": "Sent!"}
 
-# ── Update group (owner only) ─────────────────────────────────────────
 @app.put("/groups/{group_id}")
 def update_group(group_id: int, data: UpdateGroupRequest, cu: dict = Depends(get_current_user)):
     conn = get_db()
@@ -563,14 +638,12 @@ def update_group(group_id: int, data: UpdateGroupRequest, cu: dict = Depends(get
     conn.commit(); conn.close()
     return {"message": "Group updated!"}
 
-# ── Delete group (owner only — removes everything) ────────────────────
 @app.delete("/groups/{group_id}")
 def delete_group(group_id: int, cu: dict = Depends(get_current_user)):
     conn = get_db()
     group = conn.execute("SELECT * FROM groups WHERE id=?", (group_id,)).fetchone()
     if not group: conn.close(); raise HTTPException(404, "Group not found")
     if group["owner_id"] != cu["id"]: conn.close(); raise HTTPException(403, "Only the owner can delete this group")
-    # Delete all data for this group
     conn.execute("DELETE FROM group_messages WHERE group_id=?", (group_id,))
     conn.execute("DELETE FROM group_members  WHERE group_id=?", (group_id,))
     conn.execute("DELETE FROM group_invites  WHERE group_id=?", (group_id,))
@@ -578,7 +651,6 @@ def delete_group(group_id: int, cu: dict = Depends(get_current_user)):
     conn.commit(); conn.close()
     return {"message": "Group deleted permanently."}
 
-# ── Leave group (non-owner members) ──────────────────────────────────
 @app.post("/groups/{group_id}/leave")
 def leave_group(group_id: int, cu: dict = Depends(get_current_user)):
     conn = get_db()
@@ -596,7 +668,6 @@ def leave_group(group_id: int, cu: dict = Depends(get_current_user)):
     conn.commit(); conn.close()
     return {"message": "You left the group."}
 
-# ── Invite more people to existing group ─────────────────────────────
 @app.post("/groups/{group_id}/invite")
 def invite_to_group(group_id: int, data: InviteToGroupRequest, cu: dict = Depends(get_current_user)):
     conn = get_db()
@@ -614,8 +685,6 @@ def invite_to_group(group_id: int, data: InviteToGroupRequest, cu: dict = Depend
         already_member = conn.execute("SELECT id FROM group_members WHERE group_id=? AND user_id=?",
                                (group_id, uid)).fetchone()
         if already_member: continue
-
-        # If previously invited (any status), reset to pending instead of inserting new
         existing = conn.execute("SELECT id FROM group_invites WHERE group_id=? AND invitee_id=?",
                                 (group_id, uid)).fetchone()
         if existing:
@@ -628,7 +697,6 @@ def invite_to_group(group_id: int, data: InviteToGroupRequest, cu: dict = Depend
                          (group_id, cu["id"], uid))
             conn.commit()
             invite_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-
         invite_text = f"{inviter_name} invited you to join {group['name']}"
         conn.execute(
             "INSERT INTO messages (sender_id, receiver_id, text, msg_type, group_invite_id) VALUES (?,?,?,?,?)",
@@ -636,12 +704,11 @@ def invite_to_group(group_id: int, data: InviteToGroupRequest, cu: dict = Depend
         )
         conn.commit()
         sent += 1
-
     conn.close()
     if sent == 0:
         raise HTTPException(400, "No invites sent — they may already be members")
     return {"message": f"Invited {sent} person(s)!"}
-# ── Group invite respond ──────────────────────────────────────────────
+
 @app.post("/groups/invites/respond")
 def respond_group_invite(data: GroupInviteRespond, cu: dict = Depends(get_current_user)):
     if data.action not in ("accept","decline"): raise HTTPException(400, "Invalid action")

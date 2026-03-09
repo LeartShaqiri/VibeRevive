@@ -73,14 +73,24 @@ export default function HomeScreen({ navigation, route }) {
   const loadAll = async () => {
     if (!token) return;
     try {
-      const [contactsData, groupsData, friendReqData, groupInvData] = await Promise.all([
+      const [meData, contactsData, groupsData, friendReqData, groupInvData] = await Promise.all([
+        api.me(token),
         api.getContacts(token),
         api.getGroups(token),
         api.getFriendRequests(token),
         api.getGroupInvites(token),
       ]);
-      setContacts(contactsData.contacts   || []);
-      setGroups(groupsData.groups         || []);
+
+      // Always refresh profile from server so it's never corrupted
+      const u = meData.user;
+      setDisplayName(`${u.first_name} ${u.last_name}`.trim());
+      setVibeCode(u.vibe_code);
+      setProfileImage(u.profile_image || null);
+      setSelectedBorder(u.profile_border || 'glow_purple');
+      setBio(u.bio || '');
+
+      setContacts(contactsData.contacts       || []);
+      setGroups(groupsData.groups             || []);
       setFriendRequests(friendReqData.requests || []);
       setGroupInvites(groupInvData.invites     || []);
     } catch (err) {
@@ -229,7 +239,7 @@ export default function HomeScreen({ navigation, route }) {
             <View style={styles.avatarWrap}>
               <View style={[styles.avatar, styles.groupAvatar]}>
                 {item.image
-                  ? <Image source={{ uri: item.image }} style={styles.avatarImg} />
+                  ? <Image source={{ uri: item.image }} style={[styles.avatarImg, { borderRadius:16 }]} resizeMode="cover" />
                   : <Text style={styles.avatarInitials}>{gi}</Text>
                 }
               </View>
@@ -263,7 +273,7 @@ export default function HomeScreen({ navigation, route }) {
           <View style={styles.avatarWrap}>
             <View style={[styles.avatar, cb?.id !== 'none' && { borderWidth: 2, borderColor: cb?.borderColor }]}>
               {item.profile_image
-                ? <Image source={{ uri: item.profile_image }} style={styles.avatarImg} />
+                ? <Image source={{ uri: item.profile_image }} style={[styles.avatarImg, { borderRadius:26 }]} resizeMode="cover" />
                 : <Text style={styles.avatarInitials}>{ci}</Text>
               }
             </View>
@@ -626,7 +636,7 @@ const styles = StyleSheet.create({
   avatarWrap: { position:'relative' },
   avatar: { width:52, height:52, borderRadius:26, backgroundColor:'#7B5EA7', alignItems:'center', justifyContent:'center', overflow:'hidden' },
   groupAvatar: { borderRadius:16 },
-  avatarImg: { width:52, height:52, borderRadius:26 },
+  avatarImg: { width:52, height:52, borderRadius:0 },
   avatarInitials: { color:'#fff', fontSize:18, fontWeight:'600' },
   groupBadge: { position:'absolute', bottom:-3, right:-3, width:18, height:18, borderRadius:9, backgroundColor:'#fff', alignItems:'center', justifyContent:'center', shadowColor:'#000', shadowOpacity:0.1, shadowRadius:2, elevation:2 },
   groupBadgeText: { fontSize:9 },
@@ -656,7 +666,6 @@ const styles = StyleSheet.create({
   modalCancel: { alignItems:'center', paddingVertical:10 },
   modalCancelText: { fontSize:15, color:'#6B6B8A', fontStyle:'italic' },
   notifSection: { fontSize:11, letterSpacing:1, textTransform:'uppercase', color:'#6B6B8A', fontWeight:'600', marginBottom:12 },
-  // Group invite card
   inviteCard: { backgroundColor:'#fff', borderRadius:18, padding:16, marginBottom:12, borderWidth:1.5, borderColor:'rgba(123,94,167,0.15)', shadowColor:'#7B5EA7', shadowOpacity:0.06, shadowRadius:8, elevation:2 },
   inviteCardTop: { flexDirection:'row', alignItems:'center', gap:12, marginBottom:14 },
   inviteGroupAvatar: { width:50, height:50, borderRadius:14, backgroundColor:'#7B5EA7', alignItems:'center', justifyContent:'center', overflow:'hidden' },
@@ -665,7 +674,6 @@ const styles = StyleSheet.create({
   inviteGroupName: { fontSize:17, color:'#1A1A2E', fontWeight:'600', marginBottom:3 },
   inviteFrom: { fontSize:13, color:'#6B6B8A' },
   inviteActions: { flexDirection:'row', gap:10 },
-  // Friend request row
   requestRow: { flexDirection:'row', alignItems:'center', paddingVertical:12, borderBottomWidth:1, borderBottomColor:'rgba(107,107,138,0.08)', gap:12 },
   requestAvatar: { width:48, height:48, borderRadius:24, backgroundColor:'#7B5EA7', alignItems:'center', justifyContent:'center', overflow:'hidden' },
   requestAvatarImg: { width:48, height:48, borderRadius:24 },
