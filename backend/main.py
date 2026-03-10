@@ -144,6 +144,16 @@ def init_db():
             reported_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_backgrounds (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_a INTEGER NOT NULL,
+            user_b INTEGER NOT NULL,
+            image TEXT DEFAULT '',
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_a, user_b)
+        )
+    """)
 
     conn.commit()
     conn.close()
@@ -212,6 +222,8 @@ class SendGroupMessageRequest(BaseModel):
     group_id: int; text: str
 class InviteToGroupRequest(BaseModel):
     user_ids: List[int]
+class SetChatBgRequest(BaseModel):
+    image: str = ""
 class SetNicknameRequest(BaseModel):           # ← new
     nickname: str = ""
 
@@ -344,6 +356,9 @@ def get_contacts(cu: dict = Depends(get_current_user)):
                (SELECT text FROM messages
                 WHERE ((sender_id=? AND receiver_id=u.id) OR (sender_id=u.id AND receiver_id=?))
                 ORDER BY sent_at DESC LIMIT 1) as last_msg,
+               (SELECT msg_type FROM messages
+                WHERE ((sender_id=? AND receiver_id=u.id) OR (sender_id=u.id AND receiver_id=?))
+                ORDER BY sent_at DESC LIMIT 1) as last_msg_type,
                (SELECT sent_at FROM messages
                 WHERE ((sender_id=? AND receiver_id=u.id) OR (sender_id=u.id AND receiver_id=?))
                 ORDER BY sent_at DESC LIMIT 1) as last_time,
@@ -356,24 +371,39 @@ def get_contacts(cu: dict = Depends(get_current_user)):
                ) as unread
         FROM contacts c JOIN users u ON u.id=c.contact_id
         WHERE c.user_id=?
-    """, (cu["id"],cu["id"],cu["id"],cu["id"],cu["id"],cu["id"])).fetchall()
+    """, (cu["id"],cu["id"],cu["id"],cu["id"],cu["id"],cu["id"],cu["id"],cu["id"])).fetchall()
 
     contact_ids = {r["id"] for r in rows}
     result = []
     for r in rows:
+        # Fetch nickname for this contact
+        nn_row = conn.execute(
+            "SELECT nickname FROM contact_nicknames WHERE user_id=? AND contact_id=?",
+            (cu["id"], r["id"])
+        ).fetchone()
+        nickname = nn_row["nickname"] if nn_row else ""
+        # Format last message preview — never expose raw base64
+        lmt = r["last_msg_type"] or "text"
+        lm  = r["last_msg"] or ""
+        if lmt == "image" or lm.startswith("data:image"):    preview = "📷 Image"
+        elif lmt == "voice" or lm.startswith("data:audio"):  preview = "🎤 Voice message"
+        elif lmt == "gif":                                    preview = "🎞 GIF"
+        else:                                                 preview = lm or "Say hi! 👋"
         result.append({
             "id":r["id"],"name":f"{r['first_name']} {r['last_name']}".strip(),
             "vibe_code":r["vibe_code"],"profile_image":r["profile_image"] or "",
             "profile_border":r["profile_border"] or "glow_purple","bio":r["bio"] or "",
             "vibe_tags":r["vibe_tags"] or "","main_vibe":r["main_vibe"] or "",
-            "last_msg":r["last_msg"] or "Say hi! 👋","last_time":r["last_time"] or "",
-            "unread":r["unread"] or 0
+            "last_msg": preview, "last_msg_type": lmt,
+            "last_time":r["last_time"] or "",
+            "unread":r["unread"] or 0,
+            "nickname": nickname,
         })
 
     invite_senders = conn.execute("""
         SELECT DISTINCT u.id, u.first_name, u.last_name, u.vibe_code,
                u.profile_image, u.profile_border, u.bio, u.vibe_tags, u.main_vibe,
-               m.text as last_msg, m.sent_at as last_time,
+               m.text as last_msg, m.msg_type as last_msg_type, m.sent_at as last_time,
                (SELECT COUNT(*) FROM messages
                 WHERE sender_id=u.id AND receiver_id=? AND is_read=0
                   AND msg_type='group_invite'
@@ -394,8 +424,9 @@ def get_contacts(cu: dict = Depends(get_current_user)):
                 "vibe_code":r["vibe_code"],"profile_image":r["profile_image"] or "",
                 "profile_border":r["profile_border"] or "glow_purple","bio":r["bio"] or "",
                 "vibe_tags":r["vibe_tags"] or "","main_vibe":r["main_vibe"] or "",
-                "last_msg":r["last_msg"] or "","last_time":r["last_time"] or "",
-                "unread":r["unread"] or 0
+                "last_msg": "📨 Group invite", "last_msg_type": "group_invite",
+                "last_time":r["last_time"] or "",
+                "unread":r["unread"] or 0, "nickname": "",
             })
 
     result.sort(key=lambda x: x["last_time"] or "", reverse=True)
@@ -468,8 +499,15 @@ def get_messages(contact_id: int, cu: dict = Depends(get_current_user)):
                     "status":      "deleted",
                 }
         result.append(msg)
+    # Fetch shared chat background
+    uid_a, uid_b = min(cu["id"], contact_id), max(cu["id"], contact_id)
+    bg_row = conn.execute(
+        "SELECT image FROM chat_backgrounds WHERE user_a=? AND user_b=?",
+        (uid_a, uid_b)
+    ).fetchone()
+    chat_bg = bg_row["image"] if bg_row else ""
     conn.close()
-    return {"messages": result, "nickname": nickname}
+    return {"messages": result, "nickname": nickname, "chat_bg": chat_bg}
 
 # ── Delete chat (clears messages, removes from contacts until next msg) ─
 @app.delete("/messages/{contact_id}")
@@ -513,6 +551,18 @@ def report_user(contact_id: int, cu: dict = Depends(get_current_user)):
                  (cu["id"], contact_id))
     conn.commit(); conn.close()
     return {"message": "Report submitted."}
+# ── Set / clear chat background (shared between both users) ───────────
+@app.post("/contacts/{contact_id}/background")
+def set_chat_background(contact_id: int, data: SetChatBgRequest, cu: dict = Depends(get_current_user)):
+    conn = get_db()
+    uid_a, uid_b = min(cu["id"], contact_id), max(cu["id"], contact_id)
+    conn.execute("""
+        INSERT INTO chat_backgrounds (user_a, user_b, image, updated_at)
+        VALUES (?,?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(user_a, user_b) DO UPDATE SET image=excluded.image, updated_at=CURRENT_TIMESTAMP
+    """, (uid_a, uid_b, data.image))
+    conn.commit(); conn.close()
+    return {"message": "Background updated."}
 
 # ── Groups ────────────────────────────────────────────────────────────
 @app.post("/groups/create")

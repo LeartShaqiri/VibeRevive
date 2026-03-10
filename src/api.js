@@ -97,6 +97,14 @@ export const api = {
     if (!res.ok) throw new Error(data.detail || "Failed to report");
     return data;
   },
+  setChatBackground: async (token, contactId, image) => {
+    const res  = await fetch(`${API_URL}/contacts/${contactId}/background`, { method:"POST",
+      headers:{"Content-Type":"application/json", Authorization:`Bearer ${token}`},
+      body: JSON.stringify({ image }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Failed to save background");
+    return data;
+  },
   deleteChat: async (token, contactId) => {
     const res  = await fetch(`${API_URL}/messages/${contactId}`, { method:"DELETE",
       headers:{ Authorization:`Bearer ${token}` } });

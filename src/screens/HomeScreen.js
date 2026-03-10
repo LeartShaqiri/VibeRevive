@@ -66,8 +66,13 @@ export default function HomeScreen({ navigation, route }) {
     Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
   }, []);
 
+  const pollRef = useRef(null);
+
   useFocusEffect(useCallback(() => {
     loadAll();
+    // Silent poll every 4s — only updates contacts/groups, no loading spinner
+    pollRef.current = setInterval(pollContacts, 4000);
+    return () => clearInterval(pollRef.current);
   }, [token]));
 
   const loadAll = async () => {
@@ -99,6 +104,23 @@ export default function HomeScreen({ navigation, route }) {
       setLoadingContacts(false);
       setRefreshing(false);
     }
+  };
+
+  // Silent background poll — no spinner, just updates the list
+  const pollContacts = async () => {
+    if (!token) return;
+    try {
+      const [contactsData, groupsData, friendReqData, groupInvData] = await Promise.all([
+        api.getContacts(token),
+        api.getGroups(token),
+        api.getFriendRequests(token),
+        api.getGroupInvites(token),
+      ]);
+      setContacts(contactsData.contacts       || []);
+      setGroups(groupsData.groups             || []);
+      setFriendRequests(friendReqData.requests || []);
+      setGroupInvites(groupInvData.invites     || []);
+    } catch {}
   };
 
   const onRefresh = () => { setRefreshing(true); loadAll(); };
@@ -204,8 +226,12 @@ export default function HomeScreen({ navigation, route }) {
 
   const formatTime = (t) => {
     if (!t) return '';
-    try { return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
-    catch { return ''; }
+    try {
+      // SQLite stores timestamps without 'Z' suffix — append it so JS parses as UTC
+      const utc = t.includes('T') ? t : t.replace(' ', 'T');
+      const iso = utc.endsWith('Z') || utc.includes('+') ? utc : utc + 'Z';
+      return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch { return ''; }
   };
 
   // ── Combined + filtered list ──────────────────────────────────────
@@ -252,7 +278,10 @@ export default function HomeScreen({ navigation, route }) {
               </View>
               <View style={styles.contactBottom}>
                 <Text style={styles.contactLastMsg} numberOfLines={1}>
-                  {item.last_msg || 'Vibe Squad created ✦'}
+                  {!item.last_msg ? 'Vibe Squad created ✦'
+                    : item.last_msg.startsWith('data:image') ? '📷 Image'
+                    : item.last_msg.startsWith('data:audio') ? '🎤 Voice message'
+                    : item.last_msg}
                 </Text>
                 {item.member_count > 0 && (
                   <Text style={styles.memberCountText}>{item.member_count} members</Text>
@@ -267,6 +296,17 @@ export default function HomeScreen({ navigation, route }) {
     // DM
     const ci = item.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0,2);
     const cb = AVATAR_BORDERS.find(b => b.id === item.profile_border);
+    // Show nickname if set, otherwise real name
+    const dmDisplayName = item.nickname?.trim() || item.name;
+    // Format last message preview — never show raw base64
+    const getLastMsgPreview = (msg, type) => {
+      if (!msg) return '';
+      if (type === 'image' || (msg && msg.startsWith('data:image'))) return '📷 Image';
+      if (type === 'voice' || (msg && msg.startsWith('data:audio'))) return '🎤 Voice message';
+      if (type === 'gif') return '🎞 GIF';
+      return msg;
+    };
+    const lastMsgPreview = getLastMsgPreview(item.last_msg, item.last_msg_type);
     return (
       <Animated.View key={`dm-${item.id}`} style={{ opacity: fadeAnim }}>
         <TouchableOpacity style={styles.contactInner} activeOpacity={0.7} onPress={() => handleContactPress(item)}>
@@ -280,14 +320,14 @@ export default function HomeScreen({ navigation, route }) {
           </View>
           <View style={styles.contactContent}>
             <View style={styles.contactTop}>
-              <Text style={styles.contactName} numberOfLines={1}>{item.name}</Text>
+              <Text style={styles.contactName} numberOfLines={1}>{dmDisplayName}</Text>
               <Text style={[styles.contactTime, item.unread > 0 && styles.contactTimeUnread]}>
                 {formatTime(item.last_time)}
               </Text>
             </View>
             <View style={styles.contactBottom}>
               <Text style={[styles.contactLastMsg, item.unread > 0 && styles.contactLastMsgBold]} numberOfLines={1}>
-                {item.last_msg}
+                {lastMsgPreview}
               </Text>
               {item.unread > 0 && (
                 <View style={styles.unreadBadge}><Text style={styles.unreadBadgeText}>{item.unread}</Text></View>
